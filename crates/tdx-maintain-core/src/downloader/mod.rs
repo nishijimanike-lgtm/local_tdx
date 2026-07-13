@@ -1,14 +1,14 @@
 use crate::config::AppConfig;
 
-use crate::tdx::day_file::{DailyBar, DailyBarReader, DailyBarWriter};
 use crate::tdx::{list_day_symbols, Market};
 use chrono::{Datelike, Timelike};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tracing::warn;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tracing::info;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateMode {
@@ -126,8 +126,41 @@ impl DownloaderService {
     where
         F: FnMut(i32, i32, i32, i32, &str),
     {
+        on_progress(0, 0, 0, 100, "开始启动外部日线同步下载器...");
+
+        // 获取本地总股票数量作为进度分母
         let symbols = list_day_symbols(std::path::Path::new(&self.config.paths.tdx_data_dir))?;
         let total = symbols.len() as i32;
+
+        let script_path = std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join("crates/tdx-maintain-core/src/downloader/download_data.py");
+
+        let mode_str = match mode {
+            UpdateMode::Full => "full",
+            _ => "incremental",
+        };
+
+        let rps = self.current_rps();
+
+        info!("Starting python daily download process with mode: {}, rps: {}", mode_str, rps);
+
+        let mut child = tokio::process::Command::new("python")
+            .env("PYTHONIOENCODING", "utf-8")
+            .arg(&script_path)
+            .arg("--tdx-dir")
+            .arg(&self.config.paths.tdx_data_dir)
+            .arg("--mode")
+            .arg(mode_str)
+            .arg("--rate-limit")
+            .arg(rps.to_string())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()?;
+
+        let stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("failed to capture stdout"))?;
+        let mut reader = BufReader::new(stdout).lines();
+
         let mut stats = DownloadStats {
             done: 0,
             skipped: 0,
@@ -136,124 +169,50 @@ impl DownloaderService {
             failures: Vec::new(),
         };
 
-        let rps = self.current_rps();
-        let interval = Duration::from_secs_f64(1.0 / rps.max(1) as f64);
-        let reader = DailyBarReader::default();
-        let writer = DailyBarWriter::default();
+        while let Some(line) = reader.next_line().await? {
+            if line.starts_with("PROGRESS:") {
+                let json_part = &line["PROGRESS:".len()..];
+                if let Ok(prog) = serde_json::from_str::<serde_json::Value>(json_part) {
+                    let done = prog.get("done").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                    let skipped = prog.get("skipped").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                    let failed = prog.get("failed").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                    
+                    stats.done = done;
+                    stats.skipped = skipped;
+                    stats.failed = failed;
 
-        for (idx, (market, symbol)) in symbols.iter().enumerate() {
-            let path = self.day_path(*market, symbol);
-            on_progress(
-                stats.done,
-                stats.skipped,
-                stats.failed,
-                total,
-                &format!("处理 {}/{}: {}#{}", market.dir_name(), symbol, market.dir_name(), symbol),
-            );
-
-            let start = Instant::now();
-            let result: anyhow::Result<()> = async {
-                if mode != UpdateMode::Full && path.exists() {
-                    if let Some(last) = reader.last_date_async(&path).await? {
-                        let today = chrono::Local::now().date_naive();
-                        if last >= today {
-                            return Ok(());
+                    let msg = format!("正在拉取更新... 已同步: {}, 跳过: {}, 失败: {}", done, skipped, failed);
+                    on_progress(done, skipped, failed, total, &msg);
+                }
+            } else if line.starts_with("COMPLETED:") {
+                let json_part = &line["COMPLETED:".len()..];
+                if let Ok(res) = serde_json::from_str::<serde_json::Value>(json_part) {
+                    let done = res.get("done").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                    let skipped = res.get("skipped").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                    let failed = res.get("failed").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                    
+                    stats.done = done;
+                    stats.skipped = skipped;
+                    stats.failed = failed;
+                    
+                    if let Some(err_msg) = res.get("error").and_then(|v| v.as_str()) {
+                        if !err_msg.is_empty() {
+                            stats.failures.push(err_msg.to_string());
                         }
                     }
                 }
-
-                self.backup_file_async(&path, *market, symbol).await?;
-
-                let existing = if path.exists() && mode != UpdateMode::Full {
-                    reader.read_file_async(&path).await?
-                } else {
-                    Vec::new()
-                };
-
-                let last_date = existing.last().map(|b| b.date);
-                let new_bars = self.fetch_bars_from_network(*market, symbol, last_date).await?;
-
-                if new_bars.is_empty() {
-                    return Ok(());
-                }
-
-                match mode {
-                    UpdateMode::Full => writer.write_file_async(&path, &new_bars).await?,
-                    _ => writer.append_file_async(&path, &new_bars).await?,
-                }
-                Ok(())
-            }
-            .await;
-
-            match result {
-                Ok(()) => {
-                    if path.exists() {
-                        stats.done += 1;
-                    } else {
-                        stats.skipped += 1;
-                    }
-                }
-                Err(e) => {
-                    stats.failed += 1;
-                    stats
-                        .failures
-                        .push(format!("{}#{}: {e}", market.dir_name(), symbol));
-                    warn!("download failed for {}#{}: {e}", market.dir_name(), symbol);
-                }
-            }
-
-            let elapsed = start.elapsed();
-            if elapsed < interval {
-                tokio::time::sleep(interval - elapsed).await;
-            }
-
-            if idx % 50 == 0 {
-                on_progress(stats.done, stats.skipped, stats.failed, total, "进行中...");
+            } else if line.starts_with("INFO:") || line.starts_with("ERROR:") {
+                on_progress(stats.done, stats.skipped, stats.failed, total, &line);
             }
         }
 
-        on_progress(stats.done, stats.skipped, stats.failed, total, "完成");
+        let status = child.wait().await?;
+        if !status.success() {
+            anyhow::bail!("tdxrs download process exited with error. Please check server console logs for details.");
+        }
+
+        on_progress(stats.done, stats.skipped, stats.failed, total, "数据增量同步完成");
         Ok(stats)
-    }
-
-    async fn fetch_bars_from_network(
-        &self,
-        market: Market,
-        symbol: &str,
-        after: Option<chrono::NaiveDate>,
-    ) -> anyhow::Result<Vec<DailyBar>> {
-        let path = self.day_path(market, symbol);
-        let reader = DailyBarReader::default();
-
-        if path.exists() {
-            let bars = reader.read_file_async(&path).await?;
-            if let Some(after) = after {
-                return Ok(bars.into_iter().filter(|b| b.date > after).collect());
-            }
-            return Ok(bars);
-        }
-
-        let today = chrono::Local::now().date_naive();
-        let start = after.unwrap_or_else(|| today - chrono::Days::new(30));
-        let mut bars = Vec::new();
-        let mut d = start + chrono::Days::new(1);
-        let mut price = 10.0;
-        while d <= today {
-            if d.weekday().number_from_monday() <= 5 {
-                price *= 1.0 + (d.ordinal() as f64 % 7.0 - 3.0) * 0.001;
-                bars.push(DailyBar {
-                    date: d,
-                    open: price,
-                    high: price * 1.02,
-                    low: price * 0.98,
-                    close: price,
-                    amount: 1_000_000.0,
-                    volume: 100_000,
-                });
-            }
-            d = d + chrono::Days::new(1);
-        }
-        Ok(bars)
     }
 
     pub async fn run_xdxr_sync<F>(&self, mut on_progress: F) -> anyhow::Result<DownloadStats>
@@ -267,6 +226,7 @@ impl DownloaderService {
             .join("crates/tdx-maintain-core/src/downloader/parse_gbbq.py");
 
         let output = tokio::process::Command::new("python")
+            .env("PYTHONIOENCODING", "utf-8")
             .arg(&script_path)
             .arg(&self.config.paths.metadata_db_path)
             .arg(&self.config.paths.tdx_data_dir)
