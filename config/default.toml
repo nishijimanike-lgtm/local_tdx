@@ -17,9 +17,9 @@ tdx_data_dir = 'D:\new_tdx64'
 parquet_dir = 'D:\tdx_maintain\parquet'
 
 [rate_limit]
-market_hours_rps = 15
-off_hours_rps = 60
-pre_post_market_rps = 30
+market_hours_rps = 100
+off_hours_rps = 200
+pre_post_market_rps = 150
 
 [schedule]
 adj_factor_sync_cron = "0 30 16 * * 1-5"

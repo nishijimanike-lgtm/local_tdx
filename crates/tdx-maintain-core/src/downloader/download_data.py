@@ -6,7 +6,20 @@ import argparse
 import time
 import json
 import threading
-from tdxrs.downloader import Downloader
+from tdxrs.downloader import Downloader, ServerPool, TdxDirectClient
+
+# Monkey patch ServerPool.__init__ to use a smaller timeout (e.g. 2.0s) for connections
+original_init = ServerPool.__init__
+
+def patched_init(self, servers=None, rate_limit=15, phase=None):
+    original_init(self, servers, rate_limit, phase)
+    self._clients = []
+    for name, ip, port in self._servers:
+        c = TdxDirectClient(ip, port, 2.0)  # Use 2.0s timeout
+        self._clients.append((name, c))
+
+ServerPool.__init__ = patched_init
+
 
 def progress_worker(dl, stop_event):
     """Periodically fetches and prints progress in JSON format to stdout."""
@@ -32,11 +45,39 @@ def main():
     args = parser.parse_args()
     markets = [m.strip().lower() for m in args.markets.split(",") if m.strip()]
     
+    # Dynamic server latency probing to filter out offline/dead servers
+    import socket
+    from tdxrs.downloader import _DEFAULT_SERVERS
+    
+    print("INFO: Probing TDX servers for connectivity and latency...", flush=True)
+    active_servers = []
+    for name, ip, port in _DEFAULT_SERVERS:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(1.0)
+            t0 = time.perf_counter()
+            s.connect((ip, port))
+            latency = (time.perf_counter() - t0) * 1000
+            s.close()
+            print(f"INFO: Server '{name}' ({ip}:{port}) is alive - {latency:.1f}ms", flush=True)
+            active_servers.append((latency, (name, ip, port)))
+        except Exception as e:
+            print(f"INFO: Server '{name}' ({ip}:{port}) is offline or timed out ({e})", flush=True)
+            
+    if active_servers:
+        active_servers.sort(key=lambda x: x[0])
+        servers_list = [item[1] for item in active_servers]
+        print(f"INFO: Selected {len(servers_list)} active servers sorted by latency.", flush=True)
+    else:
+        print("ERROR: No responsive TDX servers found! Falling back to default list.", flush=True)
+        servers_list = _DEFAULT_SERVERS
+
     # Initialize tdxrs downloader
     # format='tdx' writes raw .day files to target dir
     dl = Downloader(
         data_dir=args.tdx_dir,
         rate_limit=args.rate_limit,
+        servers=servers_list,
         format="tdx"
     )
     
