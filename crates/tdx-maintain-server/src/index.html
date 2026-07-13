@@ -185,7 +185,7 @@
         <!-- Tab 1: Dashboard Overview -->
         <div v-if="activeTab === 'dashboard'" class="space-y-8">
           <!-- Stat Grid -->
-          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-6">
             <!-- Card 1 -->
             <div class="glass-panel glow-indigo rounded-xl p-6 transition-all duration-300">
               <div class="flex items-center justify-between mb-4">
@@ -268,6 +268,29 @@
               <div class="flex items-center gap-1.5 text-xs text-slate-400">
                 <span>总大小:</span>
                 <span class="font-mono text-sky-400 font-semibold">{{ parquetStats.total_size_mb || '0.00' }} MB</span>
+              </div>
+            </div>
+
+            <!-- Card 6: Daily Bar Date Range -->
+            <div class="glass-panel glow-indigo rounded-xl p-6 transition-all duration-300">
+              <div class="flex items-center justify-between mb-4">
+                <span class="text-xs font-mono font-medium text-slate-500 uppercase tracking-wider">日线数据时间覆盖</span>
+                <div class="p-2 rounded-lg bg-violet-500/10 border border-violet-500/20 text-violet-400">
+                  <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                  </svg>
+                </div>
+              </div>
+              <p v-if="dashboard.daily_bar_range.start" class="font-display font-bold text-lg text-white mb-1 leading-tight font-mono">
+                {{ dashboard.daily_bar_range.start }}
+              </p>
+              <p v-if="dashboard.daily_bar_range.end" class="font-display font-bold text-lg text-white mb-2 leading-tight font-mono">
+                ~ {{ dashboard.daily_bar_range.end }}
+              </p>
+              <p v-else class="font-display font-bold text-2xl text-slate-500 mb-2">--</p>
+              <div class="flex items-center gap-1.5 text-xs text-slate-400">
+                <span>基准:</span>
+                <span class="font-mono text-violet-400 font-semibold">沪深主指 SH000001 / SZ399001</span>
               </div>
             </div>
           </div>
@@ -866,6 +889,10 @@
               open_days: 0,
               xdxr_events: 0,
               adj_factor_symbols: 0
+            },
+            daily_bar_range: {
+              start: null,
+              end: null
             }
           });
 

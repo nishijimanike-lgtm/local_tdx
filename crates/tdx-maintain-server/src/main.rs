@@ -18,6 +18,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use tdx_maintain_core::{
     db::repos::*,
     task::TaskKind,
+    tdx::{DailyBarReader, Market, get_day_filename},
     AppConfig, AppState,
 };
 
@@ -330,6 +331,48 @@ async fn get_dashboard(State(state): State<AppState>) -> Result<impl IntoRespons
     let xdxr_events_count = xdxr_repo.count().await.unwrap_or(0);
     let adj_factor_symbols_count = adj_repo.count_symbols().await.unwrap_or(0);
 
+    // Compute daily bar date range from benchmark index files (SH 000001 and SZ 399001)
+    let tdx_data_dir = state.config.paths.tdx_data_dir.clone();
+    let daily_bar_range = tokio::task::spawn_blocking(move || {
+        let base_dir = {
+            let p = std::path::Path::new(&tdx_data_dir);
+            if p.ends_with("vipdoc") { p.to_path_buf() } else { p.join("vipdoc") }
+        };
+
+        // Define the two benchmark indices: SH 000001 and SZ 399001
+        let index_candidates = [
+            (Market::Sh, "000001"),
+            (Market::Sz, "399001"),
+        ];
+
+        let reader = DailyBarReader::default();
+        let mut first_date: Option<String> = None;
+        let mut last_date: Option<String> = None;
+
+        for (market, code) in &index_candidates {
+            let filename = get_day_filename(*market, code, &base_dir);
+            let path = base_dir.join(market.dir_name()).join("lday").join(&filename);
+            if let Ok(bars) = reader.read_file(&path) {
+                if let Some(first) = bars.first() {
+                    let d = first.date.format("%Y-%m-%d").to_string();
+                    first_date = Some(match &first_date {
+                        None => d,
+                        Some(existing) => if d < *existing { d } else { existing.clone() },
+                    });
+                }
+                if let Some(last) = bars.last() {
+                    let d = last.date.format("%Y-%m-%d").to_string();
+                    last_date = Some(match &last_date {
+                        None => d,
+                        Some(existing) => if d > *existing { d } else { existing.clone() },
+                    });
+                }
+            }
+        }
+
+        (first_date, last_date)
+    }).await.unwrap_or((None, None));
+
     Ok(Json(json!({
         "adj_factor_tier": adj_factor_tier,
         "last_probe_at": last_probe_at,
@@ -340,9 +383,14 @@ async fn get_dashboard(State(state): State<AppState>) -> Result<impl IntoRespons
             "open_days": open_days_count,
             "xdxr_events": xdxr_events_count,
             "adj_factor_symbols": adj_factor_symbols_count
+        },
+        "daily_bar_range": {
+            "start": daily_bar_range.0,
+            "end": daily_bar_range.1
         }
     })))
 }
+
 
 // Handler: Get Calendar
 async fn get_calendar(

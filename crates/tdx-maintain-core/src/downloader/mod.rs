@@ -1,6 +1,5 @@
 use crate::config::AppConfig;
-use crate::db::models::{now_iso, XdxrEventRow};
-use crate::db::repos::XdxrRepo;
+
 use crate::tdx::day_file::{DailyBar, DailyBarReader, DailyBarWriter};
 use crate::tdx::{list_day_symbols, Market};
 use chrono::{Datelike, Timelike};
@@ -261,65 +260,48 @@ impl DownloaderService {
     where
         F: FnMut(i32, i32, i32, i32, &str),
     {
-        let tdx_data_dir = self.config.paths.tdx_data_dir.clone();
-        let symbols = tokio::task::spawn_blocking(move || {
-            list_day_symbols(std::path::Path::new(&tdx_data_dir))
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("spawn_blocking cancelled: {e}"))??;
-        let total = symbols.len() as i32;
-        let mut stats = DownloadStats {
-            done: 0,
-            skipped: 0,
-            failed: 0,
-            total,
-            failures: Vec::new(),
-        };
-        let repo = XdxrRepo::new(&self.pool);
-        let now = now_iso();
+        on_progress(0, 0, 0, 100, "开始解析本地 GBBQ 数据...");
 
-        for (market, symbol) in &symbols {
-            on_progress(stats.done, stats.skipped, stats.failed, total, symbol);
-            let market_i = *market as i32;
-            let events = self.fetch_xdxr_events(*market, symbol)?;
-            for ev in events {
-                repo.upsert(&XdxrEventRow {
-                    market: market_i,
-                    symbol: symbol.clone(),
-                    ex_date: ev.ex_date,
-                    category: ev.category,
-                    fenhong: ev.fenhong,
-                    peigu: ev.peigu,
-                    peigujia: ev.peigujia,
-                    songzhuangu: ev.songzhuangu,
-                    source: "tdxrs".to_string(),
-                    updated_at: now.clone(),
-                })
-                .await?;
-            }
-            stats.done += 1;
+        let script_path = std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join("crates/tdx-maintain-core/src/downloader/parse_gbbq.py");
+
+        let output = tokio::process::Command::new("python")
+            .arg(&script_path)
+            .arg(&self.config.paths.metadata_db_path)
+            .arg(&self.config.paths.tdx_data_dir)
+            .output()
+            .await?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        if !output.status.success() {
+            anyhow::bail!("XDXR python sync failed: {}", stderr);
         }
 
-        on_progress(stats.done, stats.skipped, stats.failed, total, "XDXR 完成");
-        Ok(stats)
+        let mut count = 0;
+        for line in stdout.lines() {
+            if line.contains("Parsed ") && line.contains(" XDXR events") {
+                if let Some(s) = line.split("Parsed ").nth(1) {
+                    if let Some(num_str) = s.split(" XDXR events").next() {
+                        if let Ok(val) = num_str.parse::<i32>() {
+                            count = val;
+                        }
+                    }
+                }
+            }
+        }
+
+        on_progress(count, 0, 0, count, "XDXR 完成");
+        Ok(DownloadStats {
+            done: count,
+            skipped: 0,
+            failed: 0,
+            total: count,
+            failures: Vec::new(),
+        })
     }
 
-    fn fetch_xdxr_events(
-        &self,
-        _market: Market,
-        _symbol: &str,
-    ) -> anyhow::Result<Vec<XdxrEvent>> {
-        Ok(Vec::new())
-    }
-}
-
-#[derive(Debug, Clone)]
-struct XdxrEvent {
-    ex_date: String,
-    category: i32,
-    fenhong: f64,
-    peigu: f64,
-    peigujia: f64,
-    songzhuangu: f64,
 }
 
