@@ -1,6 +1,6 @@
 use crate::config::AppConfig;
 use crate::db::models::{now_iso, AdjFactorRow};
-use crate::db::repos::{AdjFactorRepo, SyncMetaRepo};
+use crate::db::repos::SyncMetaRepo;
 use crate::alert::AlertEngine;
 use crate::tdx::{list_day_symbols, DailyBarReader, get_day_filename};
 use crate::downloader::DownloadStats;
@@ -69,7 +69,6 @@ impl AdjFactorService {
 
         let reader = DailyBarReader::default();
         let now = now_iso();
-        let adj_repo = AdjFactorRepo::new(&self.pool);
 
         // Collect spawned Parquet write handles for background execution
         let mut parquet_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
@@ -112,54 +111,34 @@ impl AdjFactorService {
                 updated_at: now.clone(),
             }).collect();
 
-            let mut db_success = false;
+            // Spawn Parquet write as a background blocking task directly
+            let parquet_base = std::path::Path::new(&self.config.paths.parquet_dir).to_path_buf();
+            let market_name = market.dir_name().to_string();
+            let symbol_clone = symbol.clone();
+            let alerts_ref = parquet_alerts.clone();
+            let rows_clone = rows;
 
-            // Batch upsert all rows for this symbol in a single transaction
-            match adj_repo.upsert_batch(&rows).await {
-                Ok(_) => {
-                    stats.done += 1;
-                    db_success = true;
+            let handle = tokio::task::spawn_blocking(move || {
+                let parquet_path = parquet_base
+                    .join(&market_name)
+                    .join(format!("{}.parquet", symbol_clone));
+
+                if let Err(e) = write_parquet_file(&parquet_path, &rows_clone) {
+                    // Log the error asynchronously via alerts
+                    let market_clone = market_name.clone();
+                    let symbol_clone2 = symbol_clone.clone();
+                    tokio::runtime::Handle::current().block_on(async move {
+                        let _ = alerts_ref.warn(
+                            "adj_factor",
+                            &format!("{}#{} Parquet 写入失败", market_clone, symbol_clone2),
+                            Some(&e.to_string()),
+                        ).await;
+                    });
                 }
-                Err(e) => {
-                    stats.failed += 1;
-                    stats.failures.push(format!("{}#{}: {}", market.dir_name(), symbol, e));
-                    let _ = self.alerts.error(
-                        "adj_factor",
-                        &format!("{}#{} 写入 DB 失败", market.dir_name(), symbol),
-                        Some(&e.to_string()),
-                    ).await;
-                }
-            }
+            });
 
-            // Spawn Parquet write as a background blocking task
-            if db_success {
-                let parquet_base = std::path::Path::new(&self.config.paths.parquet_dir).to_path_buf();
-                let market_name = market.dir_name().to_string();
-                let symbol_clone = symbol.clone();
-                let alerts_ref = parquet_alerts.clone();
-                let rows_clone = rows;
-
-                let handle = tokio::task::spawn_blocking(move || {
-                    let parquet_path = parquet_base
-                        .join(&market_name)
-                        .join(format!("{}.parquet", symbol_clone));
-
-                    if let Err(e) = write_parquet_file(&parquet_path, &rows_clone) {
-                        // Log the error asynchronously via alerts
-                        let market_clone = market_name.clone();
-                        let symbol_clone2 = symbol_clone.clone();
-                        tokio::runtime::Handle::current().block_on(async move {
-                            let _ = alerts_ref.warn(
-                                "adj_factor",
-                                &format!("{}#{} Parquet 写入失败", market_clone, symbol_clone2),
-                                Some(&e.to_string()),
-                            ).await;
-                        });
-                    }
-                });
-
-                parquet_handles.push(handle);
-            }
+            parquet_handles.push(handle);
+            stats.done += 1;
 
             // Report progress every 100 symbols (drain completed handles to limit memory)
             if idx % 100 == 0 {

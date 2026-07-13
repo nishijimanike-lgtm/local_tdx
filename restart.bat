@@ -18,6 +18,7 @@ timeout /t 1 /nobreak >nul
 
 echo.
 echo [2/3] 构建项目...
+set PATH=C:\Users\zhang\.cargo\bin;C:\rtools45\x86_64-w64-mingw32.static.posix\bin;%PATH%
 if "%1"=="release" (
     echo   模式: Release
     cargo build --release

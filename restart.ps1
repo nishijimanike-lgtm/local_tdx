@@ -42,6 +42,8 @@ if ($portCheck) {
 
 # 2. Build
 Write-Host "`n[2/3] 构建项目..." -ForegroundColor Yellow
+# Prepend cargo and rtools to PATH to ensure compiling succeeds in the local environment
+$env:PATH = "C:\Users\zhang\.cargo\bin;C:\rtools45\x86_64-w64-mingw32.static.posix\bin;" + $env:PATH
 if ($Release) {
     Write-Host "  模式: Release" -ForegroundColor Gray
     cargo build --release

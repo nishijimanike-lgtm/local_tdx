@@ -342,24 +342,42 @@ impl<'a> AdjFactorRepo<'a> {
             return Ok(());
         }
         let mut tx = self.pool.begin().await?;
-        for row in rows {
-            sqlx::query(
-                "INSERT INTO adj_factor (market, symbol, trade_date, adj_factor, data_source, confidence, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)
-                 ON CONFLICT(market, symbol, trade_date) DO UPDATE SET
-                   adj_factor=excluded.adj_factor, data_source=excluded.data_source,
-                   confidence=excluded.confidence, updated_at=excluded.updated_at",
-            )
-            .bind(row.market)
-            .bind(&row.symbol)
-            .bind(&row.trade_date)
-            .bind(row.adj_factor)
-            .bind(&row.data_source)
-            .bind(&row.confidence)
-            .bind(&row.updated_at)
-            .execute(&mut *tx)
-            .await?;
+        
+        // SQLite parameter limit is 999. With 7 columns, maximum batch size is 999 / 7 = 142.
+        // We use a safe chunk size of 100.
+        for chunk in rows.chunks(100) {
+            let mut sql = String::from(
+                "INSERT INTO adj_factor (market, symbol, trade_date, adj_factor, data_source, confidence, updated_at) VALUES "
+            );
+            
+            for i in 0..chunk.len() {
+                if i > 0 {
+                    sql.push_str(", ");
+                }
+                sql.push_str("(?, ?, ?, ?, ?, ?, ?)");
+            }
+            
+            sql.push_str(
+                " ON CONFLICT(market, symbol, trade_date) DO UPDATE SET \
+                 adj_factor=excluded.adj_factor, data_source=excluded.data_source, \
+                 confidence=excluded.confidence, updated_at=excluded.updated_at"
+            );
+            
+            let mut query = sqlx::query(&sql);
+            for row in chunk {
+                query = query
+                    .bind(row.market)
+                    .bind(&row.symbol)
+                    .bind(&row.trade_date)
+                    .bind(row.adj_factor)
+                    .bind(&row.data_source)
+                    .bind(&row.confidence)
+                    .bind(&row.updated_at);
+            }
+            
+            query.execute(&mut *tx).await?;
         }
+        
         tx.commit().await?;
         Ok(())
     }
