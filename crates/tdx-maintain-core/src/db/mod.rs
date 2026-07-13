@@ -23,7 +23,7 @@ pub async fn init_pool(db_path: &str) -> anyhow::Result<SqlitePool> {
 }
 
 pub async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
-    let sql = include_str!("../../../migrations/001_init.sql");
+    let sql = include_str!("../../../../migrations/001_init.sql");
     for statement in sql.split(';').map(str::trim).filter(|s| !s.is_empty()) {
         sqlx::query(statement).execute(pool).await?;
     }

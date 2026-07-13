@@ -1,0 +1,8 @@
+[build]
+rustflags = [
+    "-L", "C:\\rtools45\\x86_64-w64-mingw32.static.posix\\lib\\gcc\\x86_64-w64-mingw32.static.posix\\14.2.0",
+    "-L", "D:\\gp\\local_tdx\\lib"
+]
+
+[target.x86_64-pc-windows-gnu]
+linker = "rust-lld"

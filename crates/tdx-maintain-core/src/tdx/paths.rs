@@ -34,7 +34,7 @@ pub fn parse_day_filename(name: &str) -> Option<(Market, String)> {
     let stem = name.strip_suffix(".day")?;
     let (prefix, code) = stem.split_once('#')?;
     let market = Market::from_dir(prefix)?;
-    Ok((market, code.to_string()))
+    Some((market, code.to_string()))
 }
 
 pub fn list_day_symbols(tdx_data_dir: &std::path::Path) -> anyhow::Result<Vec<(Market, String)>> {

@@ -30,8 +30,8 @@ default_tier = "L3"
 daily_completeness_threshold_pct = 95.0
 
 [schedule]
-daily_increment_cron = "30 15 * * 1-5"
-xdxr_sync_cron = "0 16 * * 1-5"
-adj_factor_sync_cron = "30 16 * * 1-5"
-calendar_check_cron = "0 2 1 * *"
-weekly_scan_cron = "0 6 * * 6"
+daily_increment_cron = "0 30 15 * * 1-5"
+xdxr_sync_cron = "0 0 16 * * 1-5"
+adj_factor_sync_cron = "0 30 16 * * 1-5"
+calendar_check_cron = "0 0 2 1 * *"
+weekly_scan_cron = "0 0 6 * * 6"

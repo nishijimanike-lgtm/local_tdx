@@ -3,6 +3,7 @@ use crate::db::models::{format_date, now_iso, XdxrEventRow};
 use crate::db::repos::XdxrRepo;
 use crate::tdx::day_file::{DailyBar, DailyBarReader, DailyBarWriter};
 use crate::tdx::{list_day_symbols, Market};
+use chrono::{Datelike, Timelike};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::path::PathBuf;
@@ -78,7 +79,7 @@ impl DownloaderService {
         }
 
         let minutes = hour * 60 + minute;
-        if (9 * 60 + 30)..=(15 * 60).contains(&minutes) {
+        if ((9 * 60 + 30)..=(15 * 60)).contains(&minutes) {
             self.config.rate_limit.market_hours_rps
         } else if minutes < 9 * 60 + 30 || minutes > 15 * 60 {
             self.config.rate_limit.pre_post_market_rps
@@ -95,7 +96,7 @@ impl DownloaderService {
     where
         F: FnMut(i32, i32, i32, i32, &str),
     {
-        let symbols = list_day_symbols(self.config.paths.tdx_data_dir.as_ref().into())?;
+        let symbols = list_day_symbols(std::path::Path::new(&self.config.paths.tdx_data_dir))?;
         let total = symbols.len() as i32;
         let mut stats = DownloadStats {
             done: 0,
@@ -123,7 +124,7 @@ impl DownloaderService {
             let start = Instant::now();
             let result = (|| -> anyhow::Result<()> {
                 if mode != UpdateMode::Full && path.exists() {
-                    if let Ok(Some(last)) = reader.last_date(&path).map(Some) {
+                    if let Ok(Some(last)) = reader.last_date(&path) {
                         let today = chrono::Local::now().date_naive();
                         if last >= today {
                             return Ok(());
@@ -219,7 +220,7 @@ impl DownloaderService {
                     volume: 100_000,
                 });
             }
-            d += chrono::Days::new(1);
+            d = d + chrono::Days::new(1);
         }
         Ok(bars)
     }
@@ -228,7 +229,7 @@ impl DownloaderService {
     where
         F: FnMut(i32, i32, i32, i32, &str),
     {
-        let symbols = list_day_symbols(self.config.paths.tdx_data_dir.as_ref().into())?;
+        let symbols = list_day_symbols(std::path::Path::new(&self.config.paths.tdx_data_dir))?;
         let total = symbols.len() as i32;
         let mut stats = DownloadStats {
             done: 0,
@@ -285,4 +286,3 @@ struct XdxrEvent {
     songzhuangu: f64,
 }
 
-use chrono::Datelike;

@@ -276,7 +276,7 @@ async fn run_task(
         }
     };
 
-    result
+    Ok(())
 }
 
 pub async fn probe_adj_factor_tier(config: &AppConfig, pool: &SqlitePool) -> anyhow::Result<AdjFactorTier> {

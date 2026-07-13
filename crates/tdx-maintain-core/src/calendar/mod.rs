@@ -23,12 +23,7 @@ impl CalendarService {
             _ => Market::Sh,
         };
         let symbol = &self.config.calendar.benchmark_index_symbol;
-        let path = self
-            .config
-            .paths
-            .tdx_data_dir
-            .clone()
-            .into()
+        let path = std::path::PathBuf::from(self.config.paths.tdx_data_dir.clone())
             .join(market.dir_name())
             .join("lday")
             .join(format!("{}#{}.day", market.dir_name(), symbol));

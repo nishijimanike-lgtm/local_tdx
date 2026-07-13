@@ -80,6 +80,6 @@ impl AppConfig {
     }
 
     pub fn day_dir(&self, market: &str) -> std::path::PathBuf {
-        self.paths.tdx_data_dir.join(market).join("lday")
+        std::path::Path::new(&self.paths.tdx_data_dir).join(market).join("lday")
     }
 }
