@@ -1,0 +1,37 @@
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[paths]
+tdx_data_dir = "D:\\new_tdx64"
+metadata_db_path = "D:\\tdx_maintain\\data\\metadata.db"
+backup_dir = "D:\\tdx_maintain\\backup"
+
+[calendar]
+benchmark_index_market = 1
+benchmark_index_symbol = "000001"
+exchange = "SSE"
+
+[tushare]
+enabled = false
+token = ""
+base_url = "http://api.tushare.pro"
+
+[rate_limit]
+market_hours_rps = 15
+pre_post_market_rps = 30
+off_hours_rps = 60
+
+[adj_factor]
+conflict_threshold_pct = 1.0
+default_tier = "L3"
+
+[alerts]
+daily_completeness_threshold_pct = 95.0
+
+[schedule]
+daily_increment_cron = "30 15 * * 1-5"
+xdxr_sync_cron = "0 16 * * 1-5"
+adj_factor_sync_cron = "30 16 * * 1-5"
+calendar_check_cron = "0 2 1 * *"
+weekly_scan_cron = "0 6 * * 6"

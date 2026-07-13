@@ -1,0 +1,22 @@
+[package]
+name = "tdx-maintain-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+config.workspace = true
+futures.workspace = true
+rayon.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-cron-scheduler.workspace = true
+tokio-stream.workspace = true
+tracing.workspace = true
+uuid.workspace = true

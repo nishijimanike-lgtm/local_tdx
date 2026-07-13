@@ -1,0 +1,23 @@
+# Added by Antigravity - Rust standard gitignore
+
+# Build artifacts
+/target
+
+# Development environment
+.env
+.env.local
+.env.*.local
+
+# IDEs
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
