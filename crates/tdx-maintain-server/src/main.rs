@@ -224,79 +224,93 @@ async fn health_check() -> impl IntoResponse {
     Json(json!({ "status": "ok" }))
 }
 
-// Handler: Parquet Storage Statistics
+// Handler: Parquet Storage Statistics (runs blocking I/O in spawn_blocking)
 async fn get_parquet_stats(State(state): State<AppState>) -> impl IntoResponse {
-    use std::path::Path;
-    let parquet_dir = Path::new(&state.config.paths.parquet_dir);
+    let parquet_dir = state.config.paths.parquet_dir.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        use std::path::Path;
+        let parquet_dir_path = Path::new(&parquet_dir);
 
-    if !parquet_dir.exists() {
-        return Json(json!({
-            "exists": false,
-            "parquet_dir": state.config.paths.parquet_dir,
-            "markets": {},
-            "total_files": 0,
-            "total_size_mb": 0.0
-        }));
-    }
-
-    let mut markets: serde_json::Map<String, Value> = serde_json::Map::new();
-    let mut total_files: u64 = 0;
-    let mut total_size: u64 = 0;
-
-    let entries = match std::fs::read_dir(parquet_dir) {
-        Ok(entries) => entries,
-        Err(_) => {
-            return Json(json!({
-                "exists": true,
-                "parquet_dir": state.config.paths.parquet_dir,
+        if !parquet_dir_path.exists() {
+            return json!({
+                "exists": false,
+                "parquet_dir": parquet_dir,
                 "markets": {},
                 "total_files": 0,
-                "total_size_mb": 0.0,
-                "error": "无法读取目录"
-            }));
+                "total_size_mb": 0.0
+            });
         }
-    };
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            let market_name = path.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown")
-                .to_string();
+        let mut markets: serde_json::Map<String, Value> = serde_json::Map::new();
+        let mut total_files: u64 = 0;
+        let mut total_size: u64 = 0;
 
-            let mut file_count: u64 = 0;
-            let mut dir_size: u64 = 0;
+        let entries = match std::fs::read_dir(parquet_dir_path) {
+            Ok(entries) => entries,
+            Err(_) => {
+                return json!({
+                    "exists": true,
+                    "parquet_dir": parquet_dir,
+                    "markets": {},
+                    "total_files": 0,
+                    "total_size_mb": 0.0,
+                    "error": "无法读取目录"
+                });
+            }
+        };
 
-            if let Ok(dir_entries) = std::fs::read_dir(&path) {
-                for f in dir_entries.flatten() {
-                    let fp = f.path();
-                    if fp.extension().map_or(false, |e| e == "parquet") {
-                        file_count += 1;
-                        if let Ok(meta) = fp.metadata() {
-                            dir_size += meta.len();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let market_name = path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+
+                let mut file_count: u64 = 0;
+                let mut dir_size: u64 = 0;
+
+                if let Ok(dir_entries) = std::fs::read_dir(&path) {
+                    for f in dir_entries.flatten() {
+                        let fp = f.path();
+                        if fp.extension().map_or(false, |e| e == "parquet") {
+                            file_count += 1;
+                            if let Ok(meta) = fp.metadata() {
+                                dir_size += meta.len();
+                            }
                         }
                     }
                 }
+
+                total_files += file_count;
+                total_size += dir_size;
+
+                markets.insert(market_name, json!({
+                    "files": file_count,
+                    "size_mb": format!("{:.2}", dir_size as f64 / 1_048_576.0)
+                }));
             }
-
-            total_files += file_count;
-            total_size += dir_size;
-
-            markets.insert(market_name, json!({
-                "files": file_count,
-                "size_mb": format!("{:.2}", dir_size as f64 / 1_048_576.0)
-            }));
         }
-    }
 
-    Json(json!({
-        "exists": true,
+        json!({
+            "exists": true,
+            "parquet_dir": parquet_dir,
+            "markets": markets,
+            "total_files": total_files,
+            "total_size_mb": format!("{:.2}", total_size as f64 / 1_048_576.0)
+        })
+    })
+    .await
+    .unwrap_or_else(|_| json!({
+        "exists": false,
         "parquet_dir": state.config.paths.parquet_dir,
-        "markets": markets,
-        "total_files": total_files,
-        "total_size_mb": format!("{:.2}", total_size as f64 / 1_048_576.0)
-    }))
+        "markets": {},
+        "total_files": 0,
+        "total_size_mb": 0.0,
+        "error": "spawn_blocking 执行失败"
+    }));
+
+    Json(result)
 }
 
 // Handler: Dashboard Stats

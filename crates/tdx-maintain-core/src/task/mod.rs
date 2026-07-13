@@ -100,16 +100,36 @@ impl TaskQueue {
         let running_lock = self.running.clone();
 
         tokio::spawn(async move {
-            let result = run_task(pool.clone(), config, alerts.clone(), kind, task_id, progress_tx).await;
-            if let Err(e) = result {
-                tracing::error!("task {} failed: {e}", task_id);
-                let _ = alerts
-                    .error("task", &format!("任务 {task_id} 失败"), Some(&e.to_string()))
-                    .await;
-                let _ = TaskLogRepo::new(&pool)
-                    .finish(task_id, "failed", 0, 0, 1, Some(&e.to_string()))
-                    .await;
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(3600), // 1 hour max per task
+                run_task(pool.clone(), config, alerts.clone(), kind, task_id, progress_tx),
+            )
+            .await;
+
+            match result {
+                Ok(Ok(())) => {
+                    // task completed successfully
+                }
+                Ok(Err(e)) => {
+                    tracing::error!("task {} failed: {e}", task_id);
+                    let _ = alerts
+                        .error("task", &format!("任务 {task_id} 失败"), Some(&e.to_string()))
+                        .await;
+                    let _ = TaskLogRepo::new(&pool)
+                        .finish(task_id, "failed", 0, 0, 1, Some(&e.to_string()))
+                        .await;
+                }
+                Err(_elapsed) => {
+                    tracing::error!("task {} timed out after 1 hour", task_id);
+                    let _ = alerts
+                        .error("task", &format!("任务 {task_id} 超时"), Some("任务执行超过1小时，已自动终止"))
+                        .await;
+                    let _ = TaskLogRepo::new(&pool)
+                        .finish(task_id, "timeout", 0, 0, 1, Some("task timed out after 1 hour"))
+                        .await;
+                }
             }
+
             let mut guard = running_lock.lock().await;
             *guard = false;
         });
