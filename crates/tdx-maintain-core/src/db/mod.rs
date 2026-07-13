@@ -12,10 +12,12 @@ pub async fn init_pool(db_path: &str) -> anyhow::Result<SqlitePool> {
 
     let options = SqliteConnectOptions::from_str(&format!("sqlite:{db_path}"))?
         .create_if_missing(true)
-        .foreign_keys(true);
+        .foreign_keys(true)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
 
     let pool = SqlitePoolOptions::new()
-        .max_connections(5)
+        .max_connections(8)
         .connect_with(options)
         .await?;
 

@@ -54,6 +54,7 @@ struct PathsConfigData {
     tdx_data_dir: String,
     metadata_db_path: String,
     backup_dir: String,
+    parquet_dir: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

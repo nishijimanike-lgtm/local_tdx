@@ -23,6 +23,7 @@ pub struct PathsConfig {
     pub tdx_data_dir: String,
     pub metadata_db_path: String,
     pub backup_dir: String,
+    pub parquet_dir: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
