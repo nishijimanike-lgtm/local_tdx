@@ -52,7 +52,12 @@ impl AdjFactorService {
             base_path.join("vipdoc")
         };
 
-        let symbols = list_day_symbols(base_path)?;
+        let base_path_clone = base_path.to_path_buf();
+        let symbols = tokio::task::spawn_blocking(move || {
+            list_day_symbols(&base_path_clone)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("spawn_blocking cancelled: {e}"))??;
         let total = symbols.len() as i32;
         let mut stats = DownloadStats {
             done: 0,
@@ -85,8 +90,8 @@ impl AdjFactorService {
                 continue;
             }
 
-            // Read .day file (blocking I/O — fast for small files)
-            let bars = match reader.read_file(&path) {
+            // Read .day file (blocking I/O offloaded to spawn_blocking)
+            let bars = match reader.read_file_async(&path).await {
                 Ok(b) if b.is_empty() => { stats.skipped += 1; continue; }
                 Ok(b) => b,
                 Err(e) => {

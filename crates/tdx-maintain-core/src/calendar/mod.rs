@@ -36,7 +36,7 @@ impl CalendarService {
             .join(filename);
 
         let reader = DailyBarReader::default();
-        let bars = reader.read_file(&path)?;
+        let bars = reader.read_file_async(&path).await?;
         let now = now_iso();
         let exchange = &self.config.calendar.exchange;
 
@@ -91,7 +91,7 @@ impl CalendarService {
             .join(filename);
 
         let reader = DailyBarReader::default();
-        let bars = reader.read_file(&path)?;
+        let bars = reader.read_file_async(&path).await?;
         let now = now_iso();
         let exchange = &self.config.calendar.exchange;
 

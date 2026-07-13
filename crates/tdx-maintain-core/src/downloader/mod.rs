@@ -81,6 +81,24 @@ impl DownloaderService {
         Ok(())
     }
 
+    /// Async backup that runs the blocking copy off the tokio worker thread.
+    async fn backup_file_async(&self, src: &PathBuf, market: Market, symbol: &str) -> anyhow::Result<()> {
+        if !src.exists() {
+            return Ok(());
+        }
+        let dst = self.backup_path(market, symbol);
+        let src = src.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(&src, &dst)?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("spawn_blocking cancelled: {e}"))?
+    }
+
     fn current_rps(&self) -> u32 {
         let now = chrono::Local::now();
         let hour = now.hour();
@@ -135,9 +153,9 @@ impl DownloaderService {
             );
 
             let start = Instant::now();
-            let result = (|| -> anyhow::Result<()> {
+            let result: anyhow::Result<()> = async {
                 if mode != UpdateMode::Full && path.exists() {
-                    if let Ok(Some(last)) = reader.last_date(&path) {
+                    if let Some(last) = reader.last_date_async(&path).await? {
                         let today = chrono::Local::now().date_naive();
                         if last >= today {
                             return Ok(());
@@ -145,27 +163,28 @@ impl DownloaderService {
                     }
                 }
 
-                self.backup_file(&path, *market, symbol)?;
+                self.backup_file_async(&path, *market, symbol).await?;
 
                 let existing = if path.exists() && mode != UpdateMode::Full {
-                    reader.read_file(&path)?
+                    reader.read_file_async(&path).await?
                 } else {
                     Vec::new()
                 };
 
                 let last_date = existing.last().map(|b| b.date);
-                let new_bars = self.fetch_bars_from_network(*market, symbol, last_date)?;
+                let new_bars = self.fetch_bars_from_network(*market, symbol, last_date).await?;
 
                 if new_bars.is_empty() {
                     return Ok(());
                 }
 
                 match mode {
-                    UpdateMode::Full => writer.write_file(&path, &new_bars)?,
-                    _ => writer.append_file(&path, &new_bars)?,
+                    UpdateMode::Full => writer.write_file_async(&path, &new_bars).await?,
+                    _ => writer.append_file_async(&path, &new_bars).await?,
                 }
                 Ok(())
-            })();
+            }
+            .await;
 
             match result {
                 Ok(()) => {
@@ -198,7 +217,7 @@ impl DownloaderService {
         Ok(stats)
     }
 
-    fn fetch_bars_from_network(
+    async fn fetch_bars_from_network(
         &self,
         market: Market,
         symbol: &str,
@@ -208,7 +227,7 @@ impl DownloaderService {
         let reader = DailyBarReader::default();
 
         if path.exists() {
-            let bars = reader.read_file(&path)?;
+            let bars = reader.read_file_async(&path).await?;
             if let Some(after) = after {
                 return Ok(bars.into_iter().filter(|b| b.date > after).collect());
             }
@@ -242,7 +261,12 @@ impl DownloaderService {
     where
         F: FnMut(i32, i32, i32, i32, &str),
     {
-        let symbols = list_day_symbols(std::path::Path::new(&self.config.paths.tdx_data_dir))?;
+        let tdx_data_dir = self.config.paths.tdx_data_dir.clone();
+        let symbols = tokio::task::spawn_blocking(move || {
+            list_day_symbols(std::path::Path::new(&tdx_data_dir))
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("spawn_blocking cancelled: {e}"))??;
         let total = symbols.len() as i32;
         let mut stats = DownloadStats {
             done: 0,

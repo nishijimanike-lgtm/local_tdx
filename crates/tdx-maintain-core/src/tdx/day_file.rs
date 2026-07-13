@@ -67,8 +67,26 @@ impl DailyBarReader {
         Ok(bars)
     }
 
+    /// Async wrapper that runs blocking file I/O off the tokio worker thread.
+    pub async fn read_file_async(&self, path: &Path) -> anyhow::Result<Vec<DailyBar>> {
+        let coefficient = self.coefficient;
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            let reader = DailyBarReader::new(coefficient);
+            reader.read_file(&path)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("spawn_blocking cancelled: {e}"))?
+    }
+
     pub fn last_date(&self, path: &Path) -> anyhow::Result<Option<NaiveDate>> {
         let bars = self.read_file(path)?;
+        Ok(bars.last().map(|b| b.date))
+    }
+
+    /// Async wrapper for last_date.
+    pub async fn last_date_async(&self, path: &Path) -> anyhow::Result<Option<NaiveDate>> {
+        let bars = self.read_file_async(path).await?;
         Ok(bars.last().map(|b| b.date))
     }
 
@@ -121,6 +139,19 @@ impl DailyBarWriter {
         Ok(())
     }
 
+    /// Async wrapper that runs blocking file I/O off the tokio worker thread.
+    pub async fn write_file_async(&self, path: &Path, bars: &[DailyBar]) -> anyhow::Result<()> {
+        let coefficient = self.coefficient;
+        let path = path.to_path_buf();
+        let bars = bars.to_vec();
+        tokio::task::spawn_blocking(move || {
+            let writer = DailyBarWriter::new(coefficient);
+            writer.write_file(&path, &bars)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("spawn_blocking cancelled: {e}"))?
+    }
+
     pub fn append_file(&self, path: &Path, new_bars: &[DailyBar]) -> anyhow::Result<()> {
         let reader = DailyBarReader::new(self.coefficient);
         let mut existing = if path.exists() {
@@ -135,5 +166,18 @@ impl DailyBarWriter {
         }
         existing.sort_by_key(|b| b.date);
         self.write_file(path, &existing)
+    }
+
+    /// Async wrapper for append_file (reads the existing file off-thread too).
+    pub async fn append_file_async(&self, path: &Path, new_bars: &[DailyBar]) -> anyhow::Result<()> {
+        let coefficient = self.coefficient;
+        let path = path.to_path_buf();
+        let new_bars = new_bars.to_vec();
+        tokio::task::spawn_blocking(move || {
+            let writer = DailyBarWriter::new(coefficient);
+            writer.append_file(&path, &new_bars)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("spawn_blocking cancelled: {e}"))?
     }
 }

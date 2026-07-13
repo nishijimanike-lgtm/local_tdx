@@ -63,7 +63,12 @@ impl ScannerService {
         }
 
         let latest_trading_day = trading_days.last().cloned().unwrap();
-        let symbols = list_day_symbols(std::path::Path::new(&self.config.paths.tdx_data_dir))?;
+        let tdx_data_dir = self.config.paths.tdx_data_dir.clone();
+        let symbols = tokio::task::spawn_blocking(move || {
+            list_day_symbols(std::path::Path::new(&tdx_data_dir))
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("spawn_blocking cancelled: {e}"))??;
         
         let mut missing_files = Vec::new();
         let mut gaps = Vec::new();
@@ -93,7 +98,7 @@ impl ScannerService {
                 continue;
             }
 
-            match reader.read_file(&path) {
+            match reader.read_file_async(&path).await {
                 Ok(bars) => {
                     if bars.is_empty() {
                         missing_files.push(json!({
