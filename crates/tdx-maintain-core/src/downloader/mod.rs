@@ -159,7 +159,7 @@ impl DownloaderService {
             .spawn()?;
 
         let stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("failed to capture stdout"))?;
-        let mut reader = BufReader::new(stdout).lines();
+        let mut reader = BufReader::new(stdout);
 
         let mut stats = DownloadStats {
             done: 0,
@@ -169,7 +169,16 @@ impl DownloaderService {
             failures: Vec::new(),
         };
 
-        while let Some(line) = reader.next_line().await? {
+        let mut buf = Vec::new();
+        loop {
+            buf.clear();
+            let n = reader.read_until(b'\n', &mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            let line_decoded = String::from_utf8_lossy(&buf);
+            let line = line_decoded.trim_end();
+
             if line.starts_with("PROGRESS:") {
                 let json_part = &line["PROGRESS:".len()..];
                 if let Ok(prog) = serde_json::from_str::<serde_json::Value>(json_part) {
@@ -202,7 +211,7 @@ impl DownloaderService {
                     }
                 }
             } else if line.starts_with("INFO:") || line.starts_with("ERROR:") {
-                on_progress(stats.done, stats.skipped, stats.failed, total, &line);
+                on_progress(stats.done, stats.skipped, stats.failed, total, line);
             }
         }
 
