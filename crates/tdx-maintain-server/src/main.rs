@@ -128,6 +128,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/scan/results/{id}", get(get_scan_results))
         .route("/api/scan/{type}", post(run_scan))
         .route("/api/tasks", get(list_tasks))
+        .route("/api/tasks/control/pause", post(pause_task))
+        .route("/api/tasks/control/resume", post(resume_task))
+        .route("/api/tasks/control/abort", post(abort_task))
         .route("/api/tasks/{action}", post(trigger_task))
         .route("/api/tasks/progress", get(subscribe_progress))
         .route("/api/settings", get(get_settings).put(update_settings))
@@ -488,6 +491,27 @@ async fn trigger_task(
         .await
         .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
     Ok(Json(json!({ "task_id": task_id })))
+}
+
+// Handler: Pause Running Task
+async fn pause_task(State(state): State<AppState>) -> Result<impl IntoResponse, (StatusCode, String)> {
+    state.task_queue.pause().await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!({ "status": "ok", "message": "Task paused" })))
+}
+
+// Handler: Resume Running Task
+async fn resume_task(State(state): State<AppState>) -> Result<impl IntoResponse, (StatusCode, String)> {
+    state.task_queue.resume().await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!({ "status": "ok", "message": "Task resumed" })))
+}
+
+// Handler: Abort Running Task
+async fn abort_task(State(state): State<AppState>) -> Result<impl IntoResponse, (StatusCode, String)> {
+    state.task_queue.abort().await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!({ "status": "ok", "message": "Task aborted" })))
 }
 
 // Handler: Subscribe Task Progress (SSE)

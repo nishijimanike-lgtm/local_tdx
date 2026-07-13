@@ -21,6 +21,8 @@ pub struct TaskProgress {
     pub total: i32,
     pub message: String,
     pub finished: bool,
+    pub paused: bool,
+    pub aborted: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,11 +54,25 @@ impl TaskKind {
     }
 }
 
+pub struct ActiveTask {
+    pub task_id: i64,
+    pub kind: TaskKind,
+    pub stdin: Option<tokio::process::ChildStdin>,
+    pub paused: bool,
+    pub aborted: bool,
+    pub done: i32,
+    pub skipped: i32,
+    pub failed: i32,
+    pub total: i32,
+    pub message: String,
+}
+
 pub struct TaskQueue {
     pool: SqlitePool,
     config: Arc<AppConfig>,
     alerts: Arc<AlertEngine>,
     running: Arc<Mutex<bool>>,
+    pub active_task: Arc<Mutex<Option<ActiveTask>>>,
     progress_tx: broadcast::Sender<TaskProgress>,
 }
 
@@ -68,6 +84,7 @@ impl TaskQueue {
             config,
             alerts,
             running: Arc::new(Mutex::new(false)),
+            active_task: Arc::new(Mutex::new(None)),
             progress_tx,
         }
     }
@@ -85,6 +102,87 @@ impl TaskQueue {
         let _ = self.progress_tx.send(progress);
     }
 
+    pub async fn pause(&self) -> anyhow::Result<()> {
+        let mut guard = self.active_task.lock().await;
+        if let Some(ref mut task) = *guard {
+            if task.paused {
+                return Ok(());
+            }
+            if let Some(ref mut stdin) = task.stdin {
+                use tokio::io::AsyncWriteExt;
+                stdin.write_all(b"PAUSE\n").await?;
+                stdin.flush().await?;
+            }
+            task.paused = true;
+            
+            // Broadcast pause progress event
+            let progress = TaskProgress {
+                task_id: task.task_id,
+                task_type: task.kind.as_str().to_string(),
+                done: task.done,
+                skipped: task.skipped,
+                failed: task.failed,
+                total: task.total,
+                message: format!("正在拉取更新... 已暂停 (已同步: {}, 跳过: {}, 失败: {})", task.done, task.skipped, task.failed),
+                finished: false,
+                paused: true,
+                aborted: task.aborted,
+            };
+            let _ = self.progress_tx.send(progress);
+            Ok(())
+        } else {
+            anyhow::bail!("没有运行中的任务可以暂停");
+        }
+    }
+
+    pub async fn resume(&self) -> anyhow::Result<()> {
+        let mut guard = self.active_task.lock().await;
+        if let Some(ref mut task) = *guard {
+            if !task.paused {
+                return Ok(());
+            }
+            if let Some(ref mut stdin) = task.stdin {
+                use tokio::io::AsyncWriteExt;
+                stdin.write_all(b"RESUME\n").await?;
+                stdin.flush().await?;
+            }
+            task.paused = false;
+            
+            // Broadcast resume progress event
+            let progress = TaskProgress {
+                task_id: task.task_id,
+                task_type: task.kind.as_str().to_string(),
+                done: task.done,
+                skipped: task.skipped,
+                failed: task.failed,
+                total: task.total,
+                message: format!("正在拉取更新... 已同步: {}, 跳过: {}, 失败: {}", task.done, task.skipped, task.failed),
+                finished: false,
+                paused: false,
+                aborted: task.aborted,
+            };
+            let _ = self.progress_tx.send(progress);
+            Ok(())
+        } else {
+            anyhow::bail!("没有已暂停的任务可以恢复");
+        }
+    }
+
+    pub async fn abort(&self) -> anyhow::Result<()> {
+        let mut guard = self.active_task.lock().await;
+        if let Some(ref mut task) = *guard {
+            if let Some(ref mut stdin) = task.stdin {
+                use tokio::io::AsyncWriteExt;
+                let _ = stdin.write_all(b"ABORT\n").await;
+                let _ = stdin.flush().await;
+            }
+            task.aborted = true;
+            Ok(())
+        } else {
+            anyhow::bail!("没有运行中的任务可以中止");
+        }
+    }
+
     pub async fn enqueue(&self, kind: TaskKind) -> anyhow::Result<i64> {
         let mut running = self.running.lock().await;
         if *running {
@@ -98,13 +196,35 @@ impl TaskQueue {
         let alerts = self.alerts.clone();
         let progress_tx = self.progress_tx.clone();
         let running_lock = self.running.clone();
+        let active_task = self.active_task.clone();
 
         tokio::spawn(async move {
+            {
+                let mut guard = active_task.lock().await;
+                *guard = Some(ActiveTask {
+                    task_id,
+                    kind,
+                    stdin: None,
+                    paused: false,
+                    aborted: false,
+                    done: 0,
+                    skipped: 0,
+                    failed: 0,
+                    total: 100,
+                    message: "正在初始化任务...".to_string(),
+                });
+            }
+
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(3600), // 1 hour max per task
-                run_task(pool.clone(), config, alerts.clone(), kind, task_id, progress_tx),
+                run_task(pool.clone(), config, alerts.clone(), kind, task_id, progress_tx, active_task.clone()),
             )
             .await;
+
+            {
+                let mut guard = active_task.lock().await;
+                *guard = None;
+            }
 
             match result {
                 Ok(Ok(())) => {
@@ -151,8 +271,26 @@ async fn run_task(
     kind: TaskKind,
     task_id: i64,
     progress_tx: broadcast::Sender<TaskProgress>,
+    active_task: Arc<Mutex<Option<ActiveTask>>>,
 ) -> anyhow::Result<()> {
     let emit = |done: i32, skipped: i32, failed: i32, total: i32, message: &str, finished: bool| {
+        let (paused, aborted) = {
+            if let Ok(mut guard) = active_task.try_lock() {
+                if let Some(ref mut task) = *guard {
+                    task.done = done;
+                    task.skipped = skipped;
+                    task.failed = failed;
+                    task.total = total;
+                    task.message = message.to_string();
+                    (task.paused, task.aborted)
+                } else {
+                    (false, false)
+                }
+            } else {
+                (false, false)
+            }
+        };
+
         let _ = progress_tx.send(TaskProgress {
             task_id,
             task_type: kind.as_str().to_string(),
@@ -162,6 +300,8 @@ async fn run_task(
             total,
             message: message.to_string(),
             finished,
+            paused,
+            aborted,
         });
     };
 
@@ -193,10 +333,22 @@ async fn run_task(
                 TaskKind::DailyGapFill => crate::downloader::UpdateMode::GapFill,
                 _ => unreachable!(),
             };
+            
+            let active_task_for_stdin = active_task.clone();
             let stats = dl
-                .run_daily_update(mode, |done, skipped, failed, total, msg| {
-                    emit(done, skipped, failed, total, msg, false);
-                })
+                .run_daily_update(
+                    mode,
+                    |done, skipped, failed, total, msg| {
+                        emit(done, skipped, failed, total, msg, false);
+                    },
+                    move |stdin| {
+                        if let Ok(mut guard) = active_task_for_stdin.try_lock() {
+                            if let Some(ref mut task) = *guard {
+                                task.stdin = Some(stdin);
+                            }
+                        }
+                    }
+                )
                 .await?;
             let status = if stats.failed > 0 {
                 "partial"

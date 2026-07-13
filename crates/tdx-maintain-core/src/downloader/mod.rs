@@ -118,13 +118,15 @@ impl DownloaderService {
         }
     }
 
-    pub async fn run_daily_update<F>(
+    pub async fn run_daily_update<F, G>(
         &self,
         mode: UpdateMode,
         mut on_progress: F,
+        on_stdin: G,
     ) -> anyhow::Result<DownloadStats>
     where
         F: FnMut(i32, i32, i32, i32, &str),
+        G: FnOnce(tokio::process::ChildStdin),
     {
         on_progress(0, 0, 0, 100, "开始启动外部日线同步下载器...");
 
@@ -156,7 +158,12 @@ impl DownloaderService {
             .arg(rps.to_string())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
+            .stdin(Stdio::piped()) // Pipe stdin for control commands
             .spawn()?;
+
+        if let Some(stdin) = child.stdin.take() {
+            on_stdin(stdin);
+        }
 
         let stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("failed to capture stdout"))?;
         let mut reader = BufReader::new(stdout);

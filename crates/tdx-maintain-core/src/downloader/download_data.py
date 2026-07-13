@@ -20,6 +20,30 @@ def patched_init(self, servers=None, rate_limit=15, phase=None):
 
 ServerPool.__init__ = patched_init
 
+state = {
+    "paused": False,
+    "aborted": False
+}
+
+def stdin_listener(stop_event):
+    """Background listener for sys.stdin control commands (PAUSE, RESUME, ABORT)."""
+    while not stop_event.is_set():
+        try:
+            line = sys.stdin.readline()
+            if not line:
+                break
+            cmd = line.strip().upper()
+            if cmd == "PAUSE":
+                state["paused"] = True
+                print("INFO: Task paused.", flush=True)
+            elif cmd == "RESUME":
+                state["paused"] = False
+                print("INFO: Task resumed.", flush=True)
+            elif cmd == "ABORT":
+                state["aborted"] = True
+                print("INFO: Task aborted.", flush=True)
+        except Exception:
+            break
 
 def progress_worker(dl, stop_event):
     """Periodically fetches and prints progress in JSON format to stdout."""
@@ -27,6 +51,9 @@ def progress_worker(dl, stop_event):
     while not stop_event.is_set():
         try:
             prog = dl.progress()
+            # Inject paused status into progress json
+            prog["paused"] = state["paused"]
+            prog["aborted"] = state["aborted"]
             # Avoid printing identical values sequentially
             if prog != last_val:
                 print(f"PROGRESS:{json.dumps(prog)}", flush=True)
@@ -85,23 +112,113 @@ def main():
     progress_thread = threading.Thread(target=progress_worker, args=(dl, stop_event), daemon=True)
     progress_thread.start()
     
+    # Start stdin listener thread
+    stdin_stop = threading.Event()
+    stdin_thread = threading.Thread(target=stdin_listener, args=(stdin_stop,), daemon=True)
+    stdin_thread.start()
+    
     success = False
     error_msg = ""
     try:
+        from tdxrs.constants import MARKET_SH, MARKET_SZ, MARKET_BJ
+        from tdxrs.downloader import _CATEGORY_MAP
+        
+        market_map = {"sh": MARKET_SH, "sz": MARKET_SZ, "bj": MARKET_BJ}
+        categories = ["daily"]
+        
+        # 1. Determine stock list
+        stock_list_by_market = {}
+        
+        if args.mode == "incremental":
+            sync_data = dl._load_sync()
+            dl._sync_data = sync_data
+            if not sync_data:
+                print("INFO: No historical sync data found. Executing full download.", flush=True)
+                args.mode = "full"
+            else:
+                for key in sync_data:
+                    parts = key.split("/")
+                    if len(parts) == 2:
+                        m_name, code = parts
+                        if m_name in markets:
+                            if m_name not in stock_list_by_market:
+                                stock_list_by_market[m_name] = []
+                            stock_list_by_market[m_name].append(code)
+                            
         if args.mode == "full":
-            print(f"INFO: Starting full download for markets: {markets}...", flush=True)
-            dl.run(markets=markets, categories=["daily"])
-        else:
-            print(f"INFO: Starting incremental update for markets: {markets}...", flush=True)
-            dl.update(markets=markets, categories=["daily"])
-        success = True
+            for m_name in markets:
+                mkt = market_map.get(m_name)
+                if mkt is not None:
+                    print(f"INFO: Fetching stock list for market '{m_name}'...", flush=True)
+                    stock_list_by_market[m_name] = [item[1] for item in dl._fetch_stock_list(mkt)]
+                    
+        # 2. Start download loop
+        aborted = False
+        for cat_name in categories:
+            if cat_name not in _CATEGORY_MAP:
+                continue
+            cat_code, dir_name, max_per_req = _CATEGORY_MAP[cat_name]
+            is_minute = cat_code < 4
+            
+            for m_name in markets:
+                mkt = market_map.get(m_name)
+                if mkt is None:
+                    continue
+                codes = stock_list_by_market.get(m_name, [])
+                total = len(codes)
+                if total == 0:
+                    continue
+                
+                print(f"INFO: Starting download loop for {m_name}/{dir_name}: {total} stocks...", flush=True)
+                
+                for i, code in enumerate(codes):
+                    # Check pause
+                    if state["paused"]:
+                        while state["paused"] and not state["aborted"]:
+                            time.sleep(0.2)
+                    
+                    # Check abort
+                    if state["aborted"]:
+                        aborted = True
+                        break
+                        
+                    try:
+                        n = dl._download_one(mkt, code, cat_code, dir_name, max_per_req, is_minute)
+                        dl._stats["done"] += 1
+                        if n > 0:
+                            print(f"  [{i+1}/{total}] {code}: +{n} 条", flush=True)
+                        else:
+                            dl._stats["skipped"] += 1
+                    except Exception as e:
+                        dl._stats["failed"] += 1
+                        dl._stats["errors"].append(f"{code}: {e}")
+                        print(f"  [{i+1}/{total}] {code}: ERROR {e}", flush=True)
+                        
+                    if (i + 1) % 50 == 0:
+                        dl._save_checkpoint(m_name, dir_name, code, i + 1, total)
+                
+                if aborted:
+                    break
+                dl._save_checkpoint(m_name, dir_name, "", total, total)
+            
+            if aborted:
+                break
+        
+        # Save final sync data
+        dl._print_summary()
+        success = not aborted
+        if aborted:
+            error_msg = "Task aborted by user."
+            
     except Exception as e:
         error_msg = str(e)
         print(f"ERROR: Download process encountered error: {e}", flush=True)
     finally:
-        # Signal progress thread to stop
+        # Signal progress and stdin threads to stop
         stop_event.set()
         progress_thread.join(timeout=1.0)
+        
+        stdin_stop.set()
         
         # Print final result summary
         final_prog = dl.progress()

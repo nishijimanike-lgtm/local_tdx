@@ -487,20 +487,53 @@
 
           <!-- Dynamic Active Progress Bar -->
           <div v-if="isAnyTaskRunning" class="glass-panel rounded-xl p-6 border-indigo-500/20 shadow-lg bg-indigo-950/5">
-            <div class="flex justify-between items-center mb-4">
+            <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-4">
               <div>
-                <h4 class="font-semibold text-slate-200 text-sm">正在执行的后台任务</h4>
+                <h4 class="font-semibold text-slate-200 text-sm flex items-center gap-2">
+                  正在执行的后台任务
+                  <span v-if="activeTaskProgress.paused" class="px-2 py-0.5 rounded text-[10px] font-mono border bg-amber-500/10 text-amber-400 border-amber-500/20 animate-pulse">已暂停</span>
+                </h4>
                 <p class="text-xs text-indigo-400 font-mono">{{ activeTaskProgress.task_type }} (ID: {{ activeTaskProgress.task_id }})</p>
               </div>
-              <span class="text-xs font-mono font-semibold text-slate-300">
-                {{ activeTaskProgress.done }} / {{ activeTaskProgress.total }} ({{ percentComplete }}%)
-              </span>
+              <div class="flex items-center gap-4">
+                <!-- Task Control Buttons -->
+                <div class="flex items-center gap-2">
+                  <button 
+                    v-if="canPauseActiveTask && !activeTaskProgress.paused" 
+                    @click="controlTask('pause')" 
+                    class="px-2.5 py-1 bg-amber-600/20 hover:bg-amber-600/30 text-amber-400 border border-amber-500/20 rounded text-xs transition duration-200"
+                  >
+                    暂停
+                  </button>
+                  <button 
+                    v-if="activeTaskProgress.paused" 
+                    @click="controlTask('resume')" 
+                    class="px-2.5 py-1 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 border border-emerald-500/20 rounded text-xs transition duration-200"
+                  >
+                    恢复
+                  </button>
+                  <button 
+                    @click="controlTask('abort')" 
+                    class="px-2.5 py-1 bg-rose-600/20 hover:bg-rose-600/30 text-rose-400 border border-rose-500/20 rounded text-xs transition duration-200"
+                  >
+                    中止
+                  </button>
+                </div>
+                <span class="text-xs font-mono font-semibold text-slate-300">
+                  {{ activeTaskProgress.done }} / {{ activeTaskProgress.total }} ({{ percentComplete }}%)
+                </span>
+              </div>
             </div>
 
             <!-- Progress Track -->
             <div class="w-full h-3 rounded-full bg-slate-900 overflow-hidden border border-slate-800">
               <div 
-                class="h-full rounded-full bg-gradient-to-r from-indigo-500 to-indigo-600 transition-all duration-300"
+                class="h-full rounded-full transition-all duration-300"
+                :class="[
+                  activeTaskProgress.paused 
+                    ? 'bg-gradient-to-r from-amber-500 to-yellow-500 animate-pulse' 
+                    : 'bg-gradient-to-r from-indigo-500 to-indigo-600'
+                ]"
                 :style="{ width: percentComplete + '%' }"
               ></div>
             </div>
@@ -953,6 +986,28 @@
             return Math.min(100, Math.round((activeTaskProgress.value.done / activeTaskProgress.value.total) * 100));
           });
 
+          const canPauseActiveTask = computed(() => {
+            const t = activeTaskProgress.value.task_type;
+            return t === 'daily_bar_full' || t === 'daily_bar_update' || t === 'daily_bar_gap_fill';
+          });
+
+          const controlTask = async (action) => {
+            try {
+              appendConsoleLog('CONTROL', `发出指令: [${action}] 给当前任务`, 'bg-indigo-600/10 text-indigo-400 border border-indigo-500/20');
+              const res = await fetch(`/api/tasks/control/${action}`, { method: 'POST' });
+              if (res.ok) {
+                showToast(`任务指令 [${action}] 执行成功`);
+                appendConsoleLog('CONTROL_OK', `指令 [${action}] 已送达底层执行引擎`, 'bg-emerald-600/10 text-emerald-400 border border-emerald-500/20');
+              } else {
+                const err = await res.text();
+                showToast(`指令失败: ${err}`, 'error');
+                appendConsoleLog('CONTROL_ERR', `指令 [${action}] 被拒绝: ${err}`, 'bg-rose-600/10 text-rose-400 border border-rose-500/20');
+              }
+            } catch (e) {
+              showToast('指令发送异常', 'error');
+            }
+          };
+
           // Console Logs console
           const consoleLogs = ref([]);
           const autoScroll = ref(true);
@@ -1205,6 +1260,8 @@
             activeTaskProgress,
             isAnyTaskRunning,
             percentComplete,
+            canPauseActiveTask,
+            controlTask,
             
             consoleLogs,
             autoScroll,
