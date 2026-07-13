@@ -1,5 +1,5 @@
 use crate::config::AppConfig;
-use crate::db::models::{format_date, now_iso, XdxrEventRow};
+use crate::db::models::{now_iso, XdxrEventRow};
 use crate::db::repos::XdxrRepo;
 use crate::tdx::day_file::{DailyBar, DailyBarReader, DailyBarWriter};
 use crate::tdx::{list_day_symbols, Market};

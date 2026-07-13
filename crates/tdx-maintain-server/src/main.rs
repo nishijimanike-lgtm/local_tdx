@@ -3,25 +3,21 @@ use axum::{
     http::StatusCode,
     response::sse::{Event, KeepAlive, Sse},
     response::{Html, IntoResponse},
-    routing::{get, post, put, patch},
+    routing::{get, post, patch},
     Json, Router,
 };
-use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::sync::Arc;
-use std::time::Duration;
 use tokio_cron_scheduler::{Job, JobScheduler};
 use tokio_stream::StreamExt as _;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::info;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, Registry};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use tdx_maintain_core::{
-    db::models::*,
     db::repos::*,
-    task::{TaskKind, TaskProgress},
+    task::TaskKind,
     AppConfig, AppState,
 };
 
@@ -126,6 +122,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/", get(serve_dashboard))
         .route("/api/health", get(health_check))
         .route("/api/dashboard", get(get_dashboard))
+        .route("/api/parquet/stats", get(get_parquet_stats))
         .route("/api/calendar", get(get_calendar).post(update_calendar))
         .route("/api/scan/results/{id}", get(get_scan_results))
         .route("/api/scan/{type}", post(run_scan))
@@ -149,7 +146,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn start_scheduler(state: AppState) -> anyhow::Result<()> {
-    let mut sched = JobScheduler::new().await?;
+    let sched = JobScheduler::new().await?;
     let config = state.config.clone();
     let task_queue = state.task_queue.clone();
 
@@ -225,6 +222,81 @@ async fn serve_dashboard() -> impl IntoResponse {
 // Handler: Health Check
 async fn health_check() -> impl IntoResponse {
     Json(json!({ "status": "ok" }))
+}
+
+// Handler: Parquet Storage Statistics
+async fn get_parquet_stats(State(state): State<AppState>) -> impl IntoResponse {
+    use std::path::Path;
+    let parquet_dir = Path::new(&state.config.paths.parquet_dir);
+
+    if !parquet_dir.exists() {
+        return Json(json!({
+            "exists": false,
+            "parquet_dir": state.config.paths.parquet_dir,
+            "markets": {},
+            "total_files": 0,
+            "total_size_mb": 0.0
+        }));
+    }
+
+    let mut markets: serde_json::Map<String, Value> = serde_json::Map::new();
+    let mut total_files: u64 = 0;
+    let mut total_size: u64 = 0;
+
+    let entries = match std::fs::read_dir(parquet_dir) {
+        Ok(entries) => entries,
+        Err(_) => {
+            return Json(json!({
+                "exists": true,
+                "parquet_dir": state.config.paths.parquet_dir,
+                "markets": {},
+                "total_files": 0,
+                "total_size_mb": 0.0,
+                "error": "无法读取目录"
+            }));
+        }
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let market_name = path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+
+            let mut file_count: u64 = 0;
+            let mut dir_size: u64 = 0;
+
+            if let Ok(dir_entries) = std::fs::read_dir(&path) {
+                for f in dir_entries.flatten() {
+                    let fp = f.path();
+                    if fp.extension().map_or(false, |e| e == "parquet") {
+                        file_count += 1;
+                        if let Ok(meta) = fp.metadata() {
+                            dir_size += meta.len();
+                        }
+                    }
+                }
+            }
+
+            total_files += file_count;
+            total_size += dir_size;
+
+            markets.insert(market_name, json!({
+                "files": file_count,
+                "size_mb": format!("{:.2}", dir_size as f64 / 1_048_576.0)
+            }));
+        }
+    }
+
+    Json(json!({
+        "exists": true,
+        "parquet_dir": state.config.paths.parquet_dir,
+        "markets": markets,
+        "total_files": total_files,
+        "total_size_mb": format!("{:.2}", total_size as f64 / 1_048_576.0)
+    }))
 }
 
 // Handler: Dashboard Stats
@@ -381,7 +453,7 @@ async fn get_settings(State(state): State<AppState>) -> impl IntoResponse {
 
 // Handler: Update Settings
 async fn update_settings(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Json(payload): Json<UpdateSettingsRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let toml_str = toml::to_string_pretty(&json!({

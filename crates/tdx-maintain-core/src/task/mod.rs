@@ -80,6 +80,7 @@ impl TaskQueue {
         *self.running.lock().await
     }
 
+    #[allow(dead_code)]
     fn emit(&self, progress: TaskProgress) {
         let _ = self.progress_tx.send(progress);
     }
@@ -146,7 +147,7 @@ async fn run_task(
 
     info!("starting task {} ({})", task_id, kind.as_str());
 
-    let result = match kind {
+    let _result = match kind {
         TaskKind::CalendarSync => {
             let svc = CalendarService::new(pool.clone(), (*config).clone());
             emit(0, 0, 0, 1, "构建交易日历...", false);

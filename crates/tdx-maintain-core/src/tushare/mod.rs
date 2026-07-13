@@ -9,6 +9,7 @@ struct TushareResponse {
 
 #[derive(Debug, Clone, Deserialize)]
 struct TushareData {
+    #[allow(dead_code)]
     fields: Vec<String>,
     items: Vec<Vec<serde_json::Value>>,
 }

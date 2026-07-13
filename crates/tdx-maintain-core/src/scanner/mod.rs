@@ -1,7 +1,6 @@
 use crate::config::AppConfig;
-use crate::db::models::now_iso;
 use crate::db::repos::{CalendarRepo, ScanRepo};
-use crate::tdx::{list_day_symbols, DailyBarReader, Market};
+use crate::tdx::{list_day_symbols, DailyBarReader};
 use serde_json::{json, Value};
 use sqlx::SqlitePool;
 use std::sync::Arc;

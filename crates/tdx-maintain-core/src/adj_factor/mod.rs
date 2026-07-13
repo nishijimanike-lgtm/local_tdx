@@ -2,7 +2,7 @@ use crate::config::AppConfig;
 use crate::db::models::{now_iso, AdjFactorRow};
 use crate::db::repos::{AdjFactorRepo, SyncMetaRepo};
 use crate::alert::AlertEngine;
-use crate::tdx::{list_day_symbols, DailyBarReader, Market, get_day_filename};
+use crate::tdx::{list_day_symbols, DailyBarReader, get_day_filename};
 use crate::downloader::DownloadStats;
 use sqlx::SqlitePool;
 use std::sync::Arc;
@@ -66,6 +66,10 @@ impl AdjFactorService {
         let now = now_iso();
         let adj_repo = AdjFactorRepo::new(&self.pool);
 
+        // Collect spawned Parquet write handles for background execution
+        let mut parquet_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+        let parquet_alerts = self.alerts.clone();
+
         for (idx, (market, symbol)) in symbols.iter().enumerate() {
             let market_i = *market as i32;
 
@@ -122,27 +126,47 @@ impl AdjFactorService {
                 }
             }
 
-            // Write to Parquet if DB upsert was successful
+            // Spawn Parquet write as a background blocking task
             if db_success {
-                let parquet_base = std::path::Path::new(&self.config.paths.parquet_dir);
-                let parquet_path = parquet_base
-                    .join(market.dir_name())
-                    .join(format!("{}.parquet", symbol));
+                let parquet_base = std::path::Path::new(&self.config.paths.parquet_dir).to_path_buf();
+                let market_name = market.dir_name().to_string();
+                let symbol_clone = symbol.clone();
+                let alerts_ref = parquet_alerts.clone();
+                let rows_clone = rows;
 
-                if let Err(e) = write_parquet_file(&parquet_path, &rows) {
-                    let _ = self.alerts.warn(
-                        "adj_factor",
-                        &format!("{}#{} Parquet 写入失败", market.dir_name(), symbol),
-                        Some(&e.to_string()),
-                    ).await;
-                }
+                let handle = tokio::task::spawn_blocking(move || {
+                    let parquet_path = parquet_base
+                        .join(&market_name)
+                        .join(format!("{}.parquet", symbol_clone));
+
+                    if let Err(e) = write_parquet_file(&parquet_path, &rows_clone) {
+                        // Log the error asynchronously via alerts
+                        let market_clone = market_name.clone();
+                        let symbol_clone2 = symbol_clone.clone();
+                        tokio::runtime::Handle::current().block_on(async move {
+                            let _ = alerts_ref.warn(
+                                "adj_factor",
+                                &format!("{}#{} Parquet 写入失败", market_clone, symbol_clone2),
+                                Some(&e.to_string()),
+                            ).await;
+                        });
+                    }
+                });
+
+                parquet_handles.push(handle);
             }
 
-            // Report progress every 100 symbols
+            // Report progress every 100 symbols (drain completed handles to limit memory)
             if idx % 100 == 0 {
+                parquet_handles.retain(|h| !h.is_finished());
                 let msg = format!("计算 {}#{}", market.dir_name(), symbol);
                 on_progress(stats.done, stats.skipped, stats.failed, total, &msg);
             }
+        }
+
+        // Drain remaining Parquet write handles
+        for handle in parquet_handles {
+            let _ = handle.await;
         }
 
         on_progress(stats.done, stats.skipped, stats.failed, total, "完成");

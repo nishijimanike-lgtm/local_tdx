@@ -185,7 +185,7 @@
         <!-- Tab 1: Dashboard Overview -->
         <div v-if="activeTab === 'dashboard'" class="space-y-8">
           <!-- Stat Grid -->
-          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
             <!-- Card 1 -->
             <div class="glass-panel glow-indigo rounded-xl p-6 transition-all duration-300">
               <div class="flex items-center justify-between mb-4">
@@ -251,6 +251,23 @@
               <div class="flex items-center gap-1.5 text-xs text-slate-400">
                 <span>安全完整度限额:</span>
                 <span class="font-mono text-rose-400 font-semibold">{{ settings.alerts.daily_completeness_threshold_pct }}%</span>
+              </div>
+            </div>
+
+            <!-- Card 5: Parquet Storage -->
+            <div class="glass-panel glow-indigo rounded-xl p-6 transition-all duration-300">
+              <div class="flex items-center justify-between mb-4">
+                <span class="text-xs font-mono font-medium text-slate-500 uppercase tracking-wider">Parquet 存储文件数</span>
+                <div class="p-2 rounded-lg bg-sky-500/10 border border-sky-500/20 text-sky-400">
+                  <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
+                  </svg>
+                </div>
+              </div>
+              <p class="font-display font-bold text-3xl text-white mb-2">{{ parquetStats.total_files || '0' }}</p>
+              <div class="flex items-center gap-1.5 text-xs text-slate-400">
+                <span>总大小:</span>
+                <span class="font-mono text-sky-400 font-semibold">{{ parquetStats.total_size_mb || '0.00' }} MB</span>
               </div>
             </div>
           </div>
@@ -350,6 +367,47 @@
                   <span>本系统主要提供通达信数据目录的自动维护功能，包含日历对齐、增量日线补齐、L3算法本地复权因子维护、完整性巡检等，并严格遵循频控策略。</span>
                 </div>
               </div>
+            </div>
+
+            <!-- Parquet Market Breakdown -->
+            <div class="glass-panel rounded-xl p-6 space-y-6" v-if="parquetStats.exists">
+              <h3 class="font-display font-semibold text-lg text-white border-b border-slate-800 pb-3">Parquet 存储集市分布</h3>
+              
+              <div class="space-y-3">
+                <div v-for="(info, market) in parquetStats.markets" :key="market" class="p-4 rounded-lg bg-slate-900/30 border border-slate-900">
+                  <div class="flex items-center justify-between mb-2">
+                    <span class="font-mono font-semibold text-sm text-slate-200 uppercase">{{ market }}</span>
+                    <span class="text-xs font-mono text-sky-400 bg-sky-500/10 border border-sky-500/20 px-2 py-0.5 rounded">{{ info.files }} 文件</span>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <div class="flex-1 h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                      <div class="h-full rounded-full bg-gradient-to-r from-sky-500 to-indigo-500" 
+                           :style="{ width: parquetStats.total_files > 0 ? Math.min(100, (info.files / parquetStats.total_files) * 100) + '%' : '0%' }">
+                      </div>
+                    </div>
+                    <span class="text-[10px] font-mono text-slate-500">{{ info.size_mb }} MB</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="p-3 rounded-lg bg-slate-900/30 border border-slate-900 flex justify-between items-center text-xs">
+                <span class="text-slate-400 font-mono">存储目录</span>
+                <code class="font-mono text-indigo-400 text-[11px] truncate max-w-[200px] select-all">{{ parquetStats.parquet_dir }}</code>
+              </div>
+            </div>
+
+            <!-- Parquet Not Initialized Placeholder -->
+            <div class="glass-panel rounded-xl p-6 space-y-4" v-if="!parquetStats.exists && parquetStats.parquet_dir">
+              <h3 class="font-display font-semibold text-lg text-white border-b border-slate-800 pb-3">Parquet 存储状态</h3>
+              <div class="p-4 rounded-lg bg-amber-950/20 border border-amber-900/30 text-xs text-amber-300 leading-relaxed">
+                <div class="flex gap-2.5 items-start">
+                  <svg class="w-4 h-4 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                  <span>Parquet 存储目录尚未初始化，请执行"本地 L3 复权因子重构"任务来生成 Parquet 数据文件。</span>
+                </div>
+              </div>
+            </div>
             </div>
           </div>
         </div>
@@ -814,10 +872,19 @@
 
           const tdxDirExists = ref(true);
 
+          // Parquet Storage Stats
+          const parquetStats = ref({
+            exists: false,
+            parquet_dir: '',
+            markets: {},
+            total_files: 0,
+            total_size_mb: '0.00'
+          });
+
           // System Settings Model
           const settings = ref({
             server: { host: '127.0.0.1', port: 8080 },
-            paths: { tdx_data_dir: 'D:\\new_tdx64', metadata_db_path: 'D:\\tdx_maintain\\data\\metadata.db', backup_dir: 'D:\\tdx_maintain\\backup' },
+            paths: { tdx_data_dir: 'D:\\new_tdx64', metadata_db_path: 'D:\\tdx_maintain\\data\\metadata.db', backup_dir: 'D:\\tdx_maintain\\backup', parquet_dir: 'D:\\tdx_maintain\\parquet' },
             calendar: { benchmark_index_market: 1, benchmark_index_symbol: '000001', exchange: 'SSE' },
             tushare: { enabled: false, token: '', base_url: 'https://api.tushare.pro' },
             rate_limit: { market_hours_rps: 5, pre_post_market_rps: 20, off_hours_rps: 100 },
@@ -917,6 +984,17 @@
             } catch (e) {
               backendConnected.value = false;
               connectionText.value = '连接异常 (端口: 8080)';
+            }
+          };
+
+          const fetchParquetStats = async () => {
+            try {
+              const res = await fetch('/api/parquet/stats');
+              if (res.ok) {
+                parquetStats.value = await res.json();
+              }
+            } catch (e) {
+              console.error('Failed to fetch parquet stats:', e);
             }
           };
 
@@ -1046,6 +1124,7 @@
                     textClass = 'text-emerald-400 font-semibold';
                     fetchDashboard();
                     fetchAlerts();
+                    fetchParquetStats();
                   } else if (data.failed > 0) {
                     tag = 'WARNING';
                     tagClass = 'bg-amber-600/10 text-amber-400 border border-amber-500/20';
@@ -1069,11 +1148,13 @@
             loadSettings();
             fetchDashboard();
             fetchAlerts();
+            fetchParquetStats();
             setupSSE();
             
             setInterval(() => {
               fetchDashboard();
               fetchAlerts();
+              fetchParquetStats();
             }, 10000);
           });
 
@@ -1091,6 +1172,7 @@
             
             dashboard,
             tdxDirExists,
+            parquetStats,
             settings,
             executableTasks,
             
