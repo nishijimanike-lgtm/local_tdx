@@ -41,19 +41,32 @@ impl DownloaderService {
 
     fn day_path(&self, market: Market, symbol: &str) -> PathBuf {
         let tdx: PathBuf = self.config.paths.tdx_data_dir.clone().into();
-        tdx.join(market.dir_name())
+        let base_dir = if tdx.ends_with("vipdoc") {
+            tdx
+        } else {
+            tdx.join("vipdoc")
+        };
+        let filename = crate::tdx::get_day_filename(market, symbol, &base_dir);
+        base_dir.join(market.dir_name())
             .join("lday")
-            .join(format!("{}#{}.day", market.dir_name(), symbol))
+            .join(filename)
     }
 
     fn backup_path(&self, market: Market, symbol: &str) -> PathBuf {
         let date = chrono::Utc::now().format("%Y%m%d").to_string();
         let backup: PathBuf = self.config.paths.backup_dir.clone().into();
+        let tdx: PathBuf = self.config.paths.tdx_data_dir.clone().into();
+        let base_dir = if tdx.ends_with("vipdoc") {
+            tdx
+        } else {
+            tdx.join("vipdoc")
+        };
+        let filename = crate::tdx::get_day_filename(market, symbol, &base_dir);
         backup
             .join(&date)
             .join(market.dir_name())
             .join("lday")
-            .join(format!("{}#{}.day", market.dir_name(), symbol))
+            .join(filename)
     }
 
     fn backup_file(&self, src: &PathBuf, market: Market, symbol: &str) -> anyhow::Result<()> {

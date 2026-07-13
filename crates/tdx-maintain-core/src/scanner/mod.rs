@@ -74,10 +74,17 @@ impl ScannerService {
         let total_symbols = symbols.len();
 
         for (market, symbol) in &symbols {
-            let path = std::path::Path::new(&self.config.paths.tdx_data_dir)
+            let base_dir = std::path::Path::new(&self.config.paths.tdx_data_dir);
+            let base_dir = if base_dir.ends_with("vipdoc") {
+                base_dir.to_path_buf()
+            } else {
+                base_dir.join("vipdoc")
+            };
+            let filename = crate::tdx::get_day_filename(*market, symbol, &base_dir);
+            let path = base_dir
                 .join(market.dir_name())
                 .join("lday")
-                .join(format!("{}#{}.day", market.dir_name(), symbol));
+                .join(filename);
 
             if !path.exists() {
                 missing_files.push(json!({

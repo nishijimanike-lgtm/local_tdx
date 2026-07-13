@@ -32,15 +32,40 @@ pub fn market_dir_name(market: Market) -> &'static str {
 
 pub fn parse_day_filename(name: &str) -> Option<(Market, String)> {
     let stem = name.strip_suffix(".day")?;
-    let (prefix, code) = stem.split_once('#')?;
+    if stem.len() < 3 {
+        return None;
+    }
+    // Try splitting by '#' first (Qlib format e.g. sh#600000)
+    if let Some((prefix, code)) = stem.split_once('#') {
+        let market = Market::from_dir(prefix)?;
+        return Some((market, code.to_string()));
+    }
+    // Otherwise split by first 2 characters (Standard format e.g. sh600000)
+    let (prefix, code) = stem.split_at(2);
     let market = Market::from_dir(prefix)?;
     Some((market, code.to_string()))
 }
 
+pub fn get_day_filename(market: Market, symbol: &str, base_dir: &std::path::Path) -> String {
+    let standard_name = format!("{}{}.day", market.dir_name(), symbol);
+    let hash_name = format!("{}#{}.day", market.dir_name(), symbol);
+    let path = base_dir.join(market.dir_name()).join("lday").join(&standard_name);
+    if path.exists() {
+        standard_name
+    } else {
+        hash_name
+    }
+}
+
 pub fn list_day_symbols(tdx_data_dir: &std::path::Path) -> anyhow::Result<Vec<(Market, String)>> {
     let mut symbols = Vec::new();
+    let base_dir = if tdx_data_dir.ends_with("vipdoc") {
+        tdx_data_dir.to_path_buf()
+    } else {
+        tdx_data_dir.join("vipdoc")
+    };
     for market in [Market::Sh, Market::Sz, Market::Bj] {
-        let dir = tdx_data_dir.join(market.dir_name()).join("lday");
+        let dir = base_dir.join(market.dir_name()).join("lday");
         if !dir.exists() {
             continue;
         }

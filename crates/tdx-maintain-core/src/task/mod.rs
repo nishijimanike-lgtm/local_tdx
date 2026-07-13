@@ -56,7 +56,7 @@ pub struct TaskQueue {
     pool: SqlitePool,
     config: Arc<AppConfig>,
     alerts: Arc<AlertEngine>,
-    running: Mutex<bool>,
+    running: Arc<Mutex<bool>>,
     progress_tx: broadcast::Sender<TaskProgress>,
 }
 
@@ -67,7 +67,7 @@ impl TaskQueue {
             pool,
             config,
             alerts,
-            running: Mutex::new(false),
+            running: Arc::new(Mutex::new(false)),
             progress_tx,
         }
     }
@@ -96,6 +96,7 @@ impl TaskQueue {
         let config = self.config.clone();
         let alerts = self.alerts.clone();
         let progress_tx = self.progress_tx.clone();
+        let running_lock = self.running.clone();
 
         tokio::spawn(async move {
             let result = run_task(pool.clone(), config, alerts.clone(), kind, task_id, progress_tx).await;
@@ -108,6 +109,8 @@ impl TaskQueue {
                     .finish(task_id, "failed", 0, 0, 1, Some(&e.to_string()))
                     .await;
             }
+            let mut guard = running_lock.lock().await;
+            *guard = false;
         });
 
         Ok(task_id)

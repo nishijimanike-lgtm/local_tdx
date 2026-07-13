@@ -2,7 +2,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::sse::{Event, KeepAlive, Sse},
-    response::IntoResponse,
+    response::{Html, IntoResponse},
     routing::{get, post, put, patch},
     Json, Router,
 };
@@ -122,6 +122,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Build Axum router
     let app = Router::new()
+        .route("/", get(serve_dashboard))
         .route("/api/health", get(health_check))
         .route("/api/dashboard", get(get_dashboard))
         .route("/api/calendar", get(get_calendar).post(update_calendar))
@@ -213,6 +214,11 @@ async fn start_scheduler(state: AppState) -> anyhow::Result<()> {
     });
 
     Ok(())
+}
+
+// Handler: Serve Frontend Dashboard
+async fn serve_dashboard() -> impl IntoResponse {
+    Html(include_str!("index.html"))
 }
 
 // Handler: Health Check

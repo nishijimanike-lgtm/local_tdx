@@ -23,10 +23,17 @@ impl CalendarService {
             _ => Market::Sh,
         };
         let symbol = &self.config.calendar.benchmark_index_symbol;
-        let path = std::path::PathBuf::from(self.config.paths.tdx_data_dir.clone())
+        let path = std::path::PathBuf::from(self.config.paths.tdx_data_dir.clone());
+        let base_dir = if path.ends_with("vipdoc") {
+            path
+        } else {
+            path.join("vipdoc")
+        };
+        let filename = crate::tdx::get_day_filename(market, symbol, &base_dir);
+        let path = base_dir
             .join(market.dir_name())
             .join("lday")
-            .join(format!("{}#{}.day", market.dir_name(), symbol));
+            .join(filename);
 
         let reader = DailyBarReader::default();
         let bars = reader.read_file(&path)?;
@@ -72,10 +79,16 @@ impl CalendarService {
             .tdx_data_dir
             .clone()
             .into();
-        let path = path
+        let base_dir = if path.ends_with("vipdoc") {
+            path
+        } else {
+            path.join("vipdoc")
+        };
+        let filename = crate::tdx::get_day_filename(market, symbol, &base_dir);
+        let path = base_dir
             .join(market.dir_name())
             .join("lday")
-            .join(format!("{}#{}.day", market.dir_name(), symbol));
+            .join(filename);
 
         let reader = DailyBarReader::default();
         let bars = reader.read_file(&path)?;
