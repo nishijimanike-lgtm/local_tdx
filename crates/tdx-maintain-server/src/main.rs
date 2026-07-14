@@ -228,8 +228,16 @@ async fn start_scheduler(state: AppState) -> anyhow::Result<()> {
 }
 
 // Handler: Serve Frontend Dashboard
+// index.html references content-hashed assets (/assets/index-<hash>.js|css).
+// Those hashes change on every frontend rebuild, so the HTML document must
+// never be cached heuristically by the browser — otherwise a stale HTML
+// referencing now-404 old hashes renders a blank page. Hashed assets under
+// /assets are still safely cacheable (ServeDir serves them immutably).
 async fn serve_dashboard() -> impl IntoResponse {
-    Html(include_str!("../../tdx-web/dist/index.html"))
+    (
+        [(axum::http::header::CACHE_CONTROL, "no-cache, must-revalidate")],
+        Html(include_str!("../../tdx-web/dist/index.html")),
+    )
 }
 
 // Handler: Health Check
@@ -506,11 +514,15 @@ async fn trigger_task(
     Path(action): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let kind = match action.as_str() {
+        "calendar-sync" => TaskKind::CalendarSync,
         "daily-full" => TaskKind::DailyFull,
         "daily-increment" => TaskKind::DailyIncrement,
         "daily-gap-fill" => TaskKind::DailyGapFill,
         "xdxr-sync" => TaskKind::XdxrSync,
         "adj-factor-sync" => TaskKind::AdjFactorSync,
+        "daily_bars" => TaskKind::DailyBarScan,
+        "xdxr" => TaskKind::XdxrScan,
+        "adj_factors" => TaskKind::AdjFactorScan,
         _ => return Err((StatusCode::BAD_REQUEST, "Invalid action".to_string())),
     };
 
