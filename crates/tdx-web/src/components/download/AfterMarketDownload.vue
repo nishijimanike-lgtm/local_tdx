@@ -1,11 +1,10 @@
 <script setup lang="ts">
-import { inject, ref, computed, watch, onUnmounted, type Ref } from 'vue'
-import type { TaskProgress } from '../../types'
+import { ref, computed, watch, onUnmounted, type Ref } from 'vue'
+import { useTasksStore } from '../../stores/tasks'
 
-const p = inject<TaskProgress>('activeTaskProgress')!
-const triggerTask = inject<(a: string) => Promise<void>>('triggerTask')!
-const controlTask = inject<(a: string) => Promise<void>>('controlTask')!
-const showToast = inject<(m: string, t?: string) => void>('showToast')!
+const tasks = useTasksStore()
+const showToast = (m: string, t: 'success' | 'error' | 'info' = 'success') =>
+  (window as any).__toast?.(m, t)
 
 // Download options
 const dateStart = ref('')
@@ -69,28 +68,28 @@ const taskLabelMap: Record<string, string> = {
 }
 
 function currentTaskLabel() {
-  return taskLabelMap[p.task_type] || p.task_type || '—'
+  return taskLabelMap[tasks.progress.task_type] || tasks.progress.task_type || '—'
 }
 function percent() {
-  return p.total > 0 ? Math.round((p.done / p.total) * 100) : 0
+  return tasks.progress.total > 0 ? Math.round((tasks.progress.done / tasks.progress.total) * 100) : 0
 }
-function running() { return !p.finished }
-function paused() { return p.paused }
+function running() { return !tasks.progress.finished }
+function paused() { return tasks.progress.paused }
 
 const visible = ref(false)
 let hideTimer: ReturnType<typeof setTimeout> | null = null
 
-watch(() => p.finished, (finished) => {
+watch(() => tasks.progress.finished, (finished) => {
   if (!finished) {
     visible.value = true
     isDownloading.value = true
     if (hideTimer) { clearTimeout(hideTimer); hideTimer = null }
-  } else if (p.task_id > 0 && currentIndex.value >= 0) {
+  } else if (tasks.progress.task_id > 0 && currentIndex.value >= 0) {
     // Task completed, start next in queue
     currentIndex.value++
     if (currentIndex.value < downloadQueue.value.length) {
       const next = downloadQueue.value[currentIndex.value]
-      setTimeout(() => triggerTask(next), 500)
+      setTimeout(() => tasks.trigger(next), 500)
     } else {
       // All done
       isDownloading.value = false
@@ -111,12 +110,12 @@ function startDownload() {
   downloadQueue.value = selected
   currentIndex.value = 0
   isDownloading.value = true
-  triggerTask(selected[0])
+  tasks.trigger(selected[0])
   showToast(`开始下载 ${selected.length} 项数据`, 'info')
 }
 
 function stopDownload() {
-  controlTask('abort')
+  tasks.control('abort')
   isDownloading.value = false
   currentIndex.value = -1
   downloadQueue.value = []
@@ -226,7 +225,7 @@ onUnmounted(() => { if (hideTimer) clearTimeout(hideTimer) })
             {{ paused() ? '⏸ 已暂停' : '🔄 下载中' }}
           </h3>
         </div>
-        <span class="text-xs font-mono text-slate-500">{{ p.done }} / {{ p.total }}</span>
+        <span class="text-xs font-mono text-slate-500">{{ tasks.progress.done }} / {{ tasks.progress.total }}</span>
       </div>
 
       <div class="w-full bg-slate-800 rounded-full h-3 mb-3 overflow-hidden">
@@ -235,14 +234,14 @@ onUnmounted(() => { if (hideTimer) clearTimeout(hideTimer) })
           :style="{ width: percent() + '%' }" />
       </div>
 
-      <p class="text-xs text-slate-400 mb-4">{{ p.message }}</p>
+      <p class="text-xs text-slate-400 mb-4">{{ tasks.progress.message }}</p>
 
       <div class="flex gap-3">
-        <button v-if="!paused()" @click="controlTask('pause')"
+        <button v-if="!paused()" @click="tasks.control('pause')"
           class="px-4 py-2 text-xs rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-400 hover:bg-amber-500/20">
           暂停
         </button>
-        <button v-else @click="controlTask('resume')"
+        <button v-else @click="tasks.control('resume')"
           class="px-4 py-2 text-xs rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 hover:bg-emerald-500/20">
           恢复
         </button>
@@ -254,12 +253,12 @@ onUnmounted(() => { if (hideTimer) clearTimeout(hideTimer) })
     </div>
 
     <!-- Completed summary -->
-    <div v-if="visible && p.finished && !running()" class="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-6 text-center">
+    <div v-if="visible && tasks.progress.finished && !running()" class="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-6 text-center">
       <svg class="w-10 h-10 mx-auto mb-3 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
         <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
       </svg>
       <p class="text-sm font-semibold text-emerald-400">全部下载完成</p>
-      <p class="text-xs text-slate-500 mt-1">{{ p.done }} 项已同步, {{ p.failed }} 项失败</p>
+      <p class="text-xs text-slate-500 mt-1">{{ tasks.progress.done }} 项已同步, {{ tasks.progress.failed }} 项失败</p>
     </div>
   </div>
 </template>

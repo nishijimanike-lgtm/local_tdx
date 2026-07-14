@@ -145,6 +145,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/settings", get(get_settings).put(update_settings))
         .route("/api/alerts", get(list_alerts))
         .route("/api/alerts/{id}/acknowledge", patch(acknowledge_alert))
+        .fallback(spa_fallback)
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -238,6 +239,22 @@ async fn serve_dashboard() -> impl IntoResponse {
         [(axum::http::header::CACHE_CONTROL, "no-cache, must-revalidate")],
         Html(include_str!("../../tdx-web/dist/index.html")),
     )
+}
+
+// Handler: SPA Fallback
+// vue-router uses HTML5 history mode, so deep links like /settings or /download
+// must be served the app shell (index.html) so client-side routing can take
+// over on refresh/direct-access. Unknown /api/* paths return a real 404 (not
+// HTML) so frontend fetch errors stay diagnosable.
+async fn spa_fallback(uri: axum::http::Uri) -> axum::response::Response {
+    if uri.path().starts_with("/api") {
+        return (StatusCode::NOT_FOUND, "Not Found").into_response();
+    }
+    (
+        [(axum::http::header::CACHE_CONTROL, "no-cache, must-revalidate")],
+        Html(include_str!("../../tdx-web/dist/index.html")),
+    )
+        .into_response()
 }
 
 // Handler: Health Check
