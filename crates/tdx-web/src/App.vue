@@ -3,7 +3,6 @@ import { onMounted, onUnmounted } from 'vue'
 import { RouterView } from 'vue-router'
 import { useDashboardStore } from './stores/dashboard'
 import { useTasksStore } from './stores/tasks'
-import { useAlertsStore } from './stores/alerts'
 import { useSettingsStore } from './stores/settings'
 import { useToast } from './composables/useToast'
 import { useClock } from './composables/useClock'
@@ -13,7 +12,6 @@ import ToastContainer from './components/ui/ToastContainer.vue'
 
 const dashboard = useDashboardStore()
 const tasks = useTasksStore()
-const alerts = useAlertsStore()
 const settings = useSettingsStore()
 const { toasts, show } = useToast()
 const clock = useClock()
@@ -21,7 +19,6 @@ const clock = useClock()
 onMounted(() => {
   dashboard.fetch()
   dashboard.fetchParquet()
-  alerts.fetch()
   tasks.fetchHistory()
   settings.fetch()
   tasks.connectSSE()
@@ -34,16 +31,13 @@ onUnmounted(() => { tasks.disconnectSSE() })
 const menuItems = [
   { id: 'dashboard', name: '大盘概览', icon: 'M4 6a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z', path: '/' },
   { id: 'download', name: '盘后下载', icon: 'M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4', path: '/download' },
-  { id: 'tasks', name: '数据任务调度', icon: 'M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z M15 12a3 3 0 11-6 0 3 3 0 016 0z', path: '/tasks' },
-  { id: 'calendar', name: '交易日历', icon: 'M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z', path: '/calendar' },
-  { id: 'alerts', name: '告警看板', icon: 'M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z', path: '/alerts' },
   { id: 'settings', name: '全局设置', icon: 'M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4', path: '/settings' },
 ]
 </script>
 
 <template>
   <div id="app" class="flex h-full w-full bg-slate-950">
-    <Sidebar :items="menuItems" :alert-count="alerts.unreadCount" />
+    <Sidebar :items="menuItems" />
     <div class="flex-1 flex flex-col overflow-hidden">
       <header class="h-16 flex items-center px-6 border-b border-slate-900 gap-3 shrink-0">
         <div class="w-8 h-8 rounded-lg bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center shadow-lg shadow-indigo-500/20">

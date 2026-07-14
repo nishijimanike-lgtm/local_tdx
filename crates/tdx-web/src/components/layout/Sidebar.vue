@@ -2,7 +2,6 @@
 
 defineProps<{
   items: { id: string; name: string; icon: string; path: string }[]
-  alertCount: number
 }>()
 
 </script>
@@ -22,10 +21,6 @@ defineProps<{
             <path stroke-linecap="round" stroke-linejoin="round" :d="item.icon" />
           </svg>
           {{ item.name }}
-          <span v-if="item.id === 'alerts' && alertCount > 0"
-            class="ml-auto px-2 py-0.5 text-xs rounded-full bg-rose-500/20 text-rose-400 border border-rose-500/30" aria-label="{{ alertCount }} 条未读告警">
-            {{ alertCount }}
-          </span>
         </a>
       </router-link>
     </nav>
