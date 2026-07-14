@@ -19,4 +19,5 @@ export const api = {
   post<T>(url: string, body?: unknown): Promise<T> { return request('POST', url, body) },
   put<T>(url: string, body: unknown): Promise<T> { return request('PUT', url, body) },
   patch<T>(url: string, body?: unknown): Promise<T> { return request('PATCH', url, body) },
+  delete<T>(url: string): Promise<T> { return request('DELETE', url) },
 }

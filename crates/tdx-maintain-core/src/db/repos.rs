@@ -105,6 +105,25 @@ impl<'a> TaskLogRepo<'a> {
         .fetch_optional(self.pool)
         .await?)
     }
+
+    /// Delete all task_log rows. If `keep_active_id` is provided, that single
+    /// row (the currently running task) is preserved so its in-flight state
+    /// is not orphaned; everything else — including stale "running" rows left
+    /// behind by past crashes/restarts — is removed.
+    pub async fn clear_all_except(&self, keep_active_id: Option<i64>) -> anyhow::Result<()> {
+        match keep_active_id {
+            Some(id) => {
+                sqlx::query("DELETE FROM task_log WHERE id != ?")
+                    .bind(id)
+                    .execute(self.pool)
+                    .await?;
+            }
+            None => {
+                sqlx::query("DELETE FROM task_log").execute(self.pool).await?;
+            }
+        }
+        Ok(())
+    }
 }
 
 pub struct AlertRepo<'a> {

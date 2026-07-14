@@ -6,6 +6,7 @@ const p = inject<Ref<TaskProgress>>('activeTaskProgress')!
 const taskList = inject<Ref<TaskLog[]>>('taskList')!
 const triggerTask = inject<(a: string) => Promise<void>>('triggerTask')!
 const controlTask = inject<(a: string) => Promise<void>>('controlTask')!
+const clearHistory = inject<() => Promise<void>>('clearHistory')!
 
 const taskTypeMap: Record<string, string> = {
   calendar_sync: '交易日历构建',
@@ -109,7 +110,13 @@ function doControl(action: string) { controlTask(action) }
 
     <!-- Recent Tasks -->
     <div>
-      <h3 class="text-sm font-semibold text-slate-300 mb-3">最近任务记录</h3>
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-sm font-semibold text-slate-300">最近任务记录</h3>
+        <button @click="clearHistory" :disabled="taskList.length === 0"
+          class="px-3 py-1.5 text-xs rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-400 hover:bg-rose-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all">
+          清除历史记录
+        </button>
+      </div>
       <div class="bg-slate-900/40 border border-slate-800/50 rounded-xl overflow-hidden">
         <table class="w-full text-sm">
           <thead><tr class="text-slate-500 text-xs border-b border-slate-800/50"><th class="p-3 text-left">类型</th><th class="p-3 text-left">状态</th><th class="p-3 text-left">进度</th><th class="p-3 text-left">时间</th></tr></thead>

@@ -136,7 +136,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/calendar", get(get_calendar).post(update_calendar))
         .route("/api/scan/results/{id}", get(get_scan_results))
         .route("/api/scan/{type}", post(run_scan))
-        .route("/api/tasks", get(list_tasks))
+        .route("/api/tasks", get(list_tasks).delete(clear_task_history))
         .route("/api/tasks/control/pause", post(pause_task))
         .route("/api/tasks/control/resume", post(resume_task))
         .route("/api/tasks/control/abort", post(abort_task))
@@ -506,6 +506,22 @@ async fn list_tasks(State(state): State<AppState>) -> Result<impl IntoResponse, 
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(list))
+}
+
+// Handler: Clear Task History
+// Removes all task_log rows except the currently running task (if any), so
+// in-flight progress is preserved while stale/crashed "running" rows and
+// finished history are wiped.
+async fn clear_task_history(State(state): State<AppState>) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let active_id = {
+        let guard = state.task_queue.active_task.lock().await;
+        guard.as_ref().map(|t| t.task_id)
+    };
+    TaskLogRepo::new(&state.pool)
+        .clear_all_except(active_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!({ "status": "ok" })))
 }
 
 // Handler: Trigger Task

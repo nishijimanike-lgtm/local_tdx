@@ -6,6 +6,7 @@ import Sidebar from './components/Sidebar.vue'
 import StatusIndicator from './components/StatusIndicator.vue'
 import DashboardTab from './components/DashboardTab.vue'
 import TasksTab from './components/TasksTab.vue'
+import AfterMarketDownload from './components/AfterMarketDownload.vue'
 import CalendarTab from './components/CalendarTab.vue'
 import AlertsTab from './components/AlertsTab.vue'
 import SettingsTab from './components/SettingsTab.vue'
@@ -15,6 +16,7 @@ const activeTab = ref('dashboard')
 
 const menuItems = [
   { id: 'dashboard', name: '大盘概览', icon: 'M4 6a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z' },
+  { id: 'download', name: '盘后下载', icon: 'M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4' },
   { id: 'tasks', name: '数据任务调度', icon: 'M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z M15 12a3 3 0 11-6 0 3 3 0 016 0z' },
   { id: 'calendar', name: '交易日历', icon: 'M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z' },
   { id: 'alerts', name: '告警看板', icon: 'M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z' },
@@ -97,8 +99,13 @@ async function acknowledgeAlert(id: number) {
 
 // Tasks
 async function fetchTasks() { try { taskList.value = await api.get<TaskLog[]>('/api/tasks') } catch { /* */ } }
+async function clearHistory() {
+  if (!confirm('确定清除所有任务历史记录吗？此操作不可撤销（运行中的任务记录会保留）。')) return
+  try { await api.delete('/api/tasks'); await fetchTasks(); showToast('历史记录已清除') }
+  catch (e: any) { showToast(`清除失败: ${e.message}`, 'error') }
+}
 async function triggerTask(action: string) {
-  try { appendConsoleLog('TASK', `触发任务: ${action}`); await api.post(`/api/tasks/${action}`); showToast('任务已触发') }
+  try { appendConsoleLog('TASK', `触发任务: ${action}`); await api.post(`/api/tasks/${action}`); showToast('任务已触发'); fetchTasks() }
   catch (e: any) { showToast(`触发失败: ${e.message}`, 'error') }
 }
 async function controlTask(action: string) {
@@ -128,6 +135,11 @@ function subscribeProgress() {
       activeTaskProgress.value = data
       appendConsoleLog(data.task_type, data.message,
         data.finished ? 'bg-emerald-600/10 text-emerald-400 border border-emerald-500/20' : 'bg-indigo-600/10 text-indigo-400 border border-indigo-500/20')
+      if (data.finished && data.task_id > 0) {
+        // Task just finished — refresh history so the completed row appears.
+        // Small delay lets the backend's finish() DB write land first.
+        setTimeout(() => { fetchTasks() }, 300)
+      }
     } catch { /* */ }
   }
 }
@@ -161,6 +173,7 @@ provide('fetchParquetStats', fetchParquetStats)
 provide('fetchAlerts', fetchAlerts)
 provide('acknowledgeAlert', acknowledgeAlert)
 provide('fetchTasks', fetchTasks)
+provide('clearHistory', clearHistory)
 provide('triggerTask', triggerTask)
 provide('controlTask', controlTask)
 provide('fetchCalendar', fetchCalendar)
@@ -192,6 +205,7 @@ provide('appendConsoleLog', appendConsoleLog)
       <!-- Content -->
       <main class="flex-1 overflow-y-auto px-8 pt-6 pb-8 relative z-10">
         <DashboardTab v-if="activeTab === 'dashboard'" />
+        <AfterMarketDownload v-if="activeTab === 'download'" />
         <TasksTab v-if="activeTab === 'tasks'" />
         <CalendarTab v-if="activeTab === 'calendar'" />
         <AlertsTab v-if="activeTab === 'alerts'" />

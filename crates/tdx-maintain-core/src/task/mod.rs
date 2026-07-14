@@ -202,7 +202,7 @@ impl TaskQueue {
 
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(3600),
-                run_task(pool.clone(), config, alerts.clone(), kind, task_id, progress_tx, active_task.clone()),
+                run_task(pool.clone(), config, alerts.clone(), kind, task_id, progress_tx.clone(), active_task.clone()),
             )
             .await;
 
@@ -215,6 +215,18 @@ impl TaskQueue {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {
                     tracing::error!("task {} failed: {e}", task_id);
+                    let _ = progress_tx.send(TaskProgress {
+                        task_id,
+                        task_type: kind.as_str().to_string(),
+                        done: 0,
+                        skipped: 0,
+                        failed: 1,
+                        total: 1,
+                        message: format!("任务失败: {e}"),
+                        finished: true,
+                        paused: false,
+                        aborted: false,
+                    });
                     let _ = alerts
                         .error("task", &format!("任务 {task_id} 失败"), Some(&e.to_string()))
                         .await;
@@ -224,6 +236,18 @@ impl TaskQueue {
                 }
                 Err(_elapsed) => {
                     tracing::error!("task {} timed out after 1 hour", task_id);
+                    let _ = progress_tx.send(TaskProgress {
+                        task_id,
+                        task_type: kind.as_str().to_string(),
+                        done: 0,
+                        skipped: 0,
+                        failed: 1,
+                        total: 1,
+                        message: "任务超时（超过1小时），已自动终止".to_string(),
+                        finished: true,
+                        paused: false,
+                        aborted: false,
+                    });
                     let _ = alerts
                         .error("task", &format!("任务 {task_id} 超时"), Some("任务执行超过1小时，已自动终止"))
                         .await;
