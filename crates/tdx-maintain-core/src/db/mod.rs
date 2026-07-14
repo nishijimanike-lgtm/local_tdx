@@ -36,5 +36,11 @@ pub async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
         sqlx::query(statement).execute(pool).await?;
     }
 
+    // Migration 003: add stocks table (with pinyin initials)
+    let migration_003_sql = include_str!("../../../../migrations/003_add_stocks.sql");
+    for statement in migration_003_sql.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+        sqlx::query(statement).execute(pool).await?;
+    }
+
     Ok(())
 }

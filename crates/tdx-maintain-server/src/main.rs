@@ -145,6 +145,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/settings", get(get_settings).put(update_settings))
         .route("/api/alerts", get(list_alerts))
         .route("/api/alerts/{id}/acknowledge", patch(acknowledge_alert))
+        .route("/api/stocks/search", get(search_stocks))
+        .route("/api/stock/kline", get(get_stock_kline))
         .fallback(spa_fallback)
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
@@ -658,3 +660,186 @@ async fn acknowledge_alert(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(json!({ "status": "ok" })))
 }
+
+#[derive(Debug, Deserialize)]
+struct SearchStocksParams {
+    q: String,
+}
+
+async fn search_stocks(
+    State(state): State<AppState>,
+    Query(params): Query<SearchStocksParams>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let repo = StockRepo::new(&state.pool);
+
+    // Auto-sync if stocks table is empty
+    let is_empty = repo.is_empty().await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to check stocks: {e}")))?;
+    if is_empty {
+        info!("Stocks database table is empty. Auto-syncing stock list from TDX...");
+        sync_stocks_impl(&state).await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to sync stocks: {e}")))?;
+    }
+
+    let results = repo.search(&params.q).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to search stocks: {e}")))?;
+
+    let json_res: Vec<serde_json::Value> = results.into_iter().map(|(market, symbol, name)| {
+        let market_str = match market {
+            0 => "sz",
+            1 => "sh",
+            2 => "bj",
+            _ => "unknown",
+        };
+        json!({
+            "market": market_str,
+            "symbol": symbol,
+            "name": name,
+        })
+    }).collect();
+
+    Ok(Json(json_res))
+}
+
+#[derive(Debug, Deserialize)]
+struct GetStockKlineParams {
+    market: String,
+    symbol: String,
+    adjust: Option<String>,
+}
+
+async fn get_stock_kline(
+    State(state): State<AppState>,
+    Query(params): Query<GetStockKlineParams>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let market_str = params.market.to_lowercase();
+    let market = Market::from_dir(&market_str)
+        .ok_or_else(|| (StatusCode::BAD_REQUEST, format!("Invalid market: {}", params.market)))?;
+    let symbol = params.symbol;
+    let adjust = params.adjust.unwrap_or_else(|| "none".to_string());
+
+    // 1. Resolve path to lday file
+    let tdx: std::path::PathBuf = state.config.paths.tdx_data_dir.clone().into();
+    let base_dir = if tdx.ends_with("vipdoc") {
+        tdx
+    } else {
+        tdx.join("vipdoc")
+    };
+    let filename = get_day_filename(market, &symbol, &base_dir);
+    let lday_path = base_dir.join(market.dir_name()).join("lday").join(&filename);
+
+    if !lday_path.exists() {
+        return Err((StatusCode::NOT_FOUND, format!("Local day file not found: {}#{}", market_str, symbol)));
+    }
+
+    // 2. Read raw bars
+    let reader = DailyBarReader::default();
+    let bars = reader.read_file_async(&lday_path).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to read daily bars: {e}")))?;
+
+    // Check if target is an Index (typically sh000xxx or sz399xxx)
+    let is_index = (market_str == "sh" && symbol.starts_with("00"))
+        || (market_str == "sz" && symbol.starts_with("39"));
+
+    if adjust == "none" || is_index {
+        let json_res: Vec<serde_json::Value> = bars.into_iter().map(|bar| {
+            json!({
+                "date": bar.date.format("%Y-%m-%d").to_string(),
+                "open": bar.open,
+                "high": bar.high,
+                "low": bar.low,
+                "close": bar.close,
+                "volume": bar.volume,
+                "amount": bar.amount,
+            })
+        }).collect();
+        return Ok(Json(json_res));
+    }
+
+    // 3. For adjustment: load factors from parquet
+    let parquet_base = std::path::Path::new(&state.config.paths.parquet_dir);
+    let parquet_path = parquet_base.join(&market_str).join(format!("{}.parquet", symbol));
+
+    let mut factors = Vec::new();
+    if parquet_path.exists() {
+        factors = tokio::task::spawn_blocking(move || {
+            tdx_maintain_core::adj_factor::read_parquet_file(&parquet_path)
+        }).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Spawn blocking failed: {e}")))?
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to read parquet factors: {e}")))?;
+    }
+
+    if factors.is_empty() {
+        let json_res: Vec<serde_json::Value> = bars.into_iter().map(|bar| {
+            json!({
+                "date": bar.date.format("%Y-%m-%d").to_string(),
+                "open": bar.open,
+                "high": bar.high,
+                "low": bar.low,
+                "close": bar.close,
+                "volume": bar.volume,
+                "amount": bar.amount,
+            })
+        }).collect();
+        return Ok(Json(json_res));
+    }
+
+    // Sort factors by date to ensure correctness
+    factors.sort_by(|a, b| a.trade_date.cmp(&b.trade_date));
+    let latest_factor = factors.last().map(|r| r.adj_factor).unwrap_or(1.0);
+
+    let json_res: Vec<serde_json::Value> = bars.into_iter().map(|bar| {
+        let bar_date_str = bar.date.format("%Y-%m-%d").to_string();
+        
+        let factor = match factors.binary_search_by(|r| r.trade_date.cmp(&bar_date_str)) {
+            Ok(idx) => factors[idx].adj_factor,
+            Err(idx) => {
+                if idx > 0 {
+                    factors[idx - 1].adj_factor
+                } else {
+                    1.0
+                }
+            }
+        };
+
+        let (open, high, low, close, volume) = if adjust == "forward" {
+            let ratio = factor / latest_factor;
+            (
+                bar.open * ratio,
+                bar.high * ratio,
+                bar.low * ratio,
+                bar.close * ratio,
+                bar.volume as f64 / ratio,
+            )
+        } else if adjust == "backward" {
+            let ratio = factor; // relative to start
+            (
+                bar.open * ratio,
+                bar.high * ratio,
+                bar.low * ratio,
+                bar.close * ratio,
+                bar.volume as f64 / ratio,
+            )
+        } else {
+            (bar.open, bar.high, bar.low, bar.close, bar.volume as f64)
+        };
+
+        json!({
+            "date": bar_date_str,
+            "open": open,
+            "high": high,
+            "low": low,
+            "close": close,
+            "volume": volume,
+            "amount": bar.amount,
+        })
+    }).collect();
+
+    Ok(Json(json_res))
+}
+
+async fn sync_stocks_impl(state: &AppState) -> anyhow::Result<()> {
+    let downloader = tdx_maintain_core::downloader::DownloaderService::new(state.pool.clone(), state.config.clone());
+    downloader.sync_stocks().await
+}
+

@@ -18,6 +18,14 @@ timeout /t 1 /nobreak >nul
 
 echo.
 echo [2/3] 构建项目...
+
+if not exist "crates\tdx-web\dist\index.html" (
+    echo   检测到前端尚未构建，正在编译前端...
+    pushd crates\tdx-web
+    call npm install && call npm run build
+    popd
+)
+
 set PATH=C:\Users\zhang\.cargo\bin;C:\rtools45\x86_64-w64-mingw32.static.posix\bin;%PATH%
 if "%1"=="release" (
     echo   模式: Release

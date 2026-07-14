@@ -430,6 +430,53 @@ impl<'a> ScanRepo<'a> {
     }
 }
 
+pub struct StockRepo<'a> {
+    pool: &'a SqlitePool,
+}
+
+impl<'a> StockRepo<'a> {
+    pub fn new(pool: &'a SqlitePool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn upsert(
+        &self,
+        market: i32,
+        symbol: &str,
+        name: &str,
+        pinyin_initials: &str,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO stocks (market, symbol, name, pinyin_initials) VALUES (?, ?, ?, ?)",
+        )
+        .bind(market)
+        .bind(symbol)
+        .bind(name)
+        .bind(pinyin_initials)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn is_empty(&self) -> anyhow::Result<bool> {
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM stocks")
+            .fetch_one(self.pool)
+            .await?;
+        Ok(count.0 == 0)
+    }
+
+    pub async fn search(&self, query: &str) -> anyhow::Result<Vec<(i32, String, String)>> {
+        let pattern = format!("%{}%", query.to_lowercase());
+        let rows: Vec<(i32, String, String)> = sqlx::query_as(
+            "SELECT market, symbol, name FROM stocks WHERE symbol LIKE ?1 OR name LIKE ?1 OR pinyin_initials LIKE ?1 LIMIT 30",
+        )
+        .bind(pattern)
+        .fetch_all(self.pool)
+        .await?;
+        Ok(rows)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

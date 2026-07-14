@@ -168,4 +168,84 @@ impl TushareClient {
         }
         Ok(factors)
     }
+
+    pub async fn fetch_stock_basic(&self) -> anyhow::Result<Vec<StockBasicDay>> {
+        let body = serde_json::json!({
+            "api_name": "stock_basic",
+            "token": self.token,
+            "params": {
+                "list_status": "L"
+            },
+            "fields": "symbol,name,market"
+        });
+
+        let resp: TushareResponse = self
+            .client
+            .post(&self.base_url)
+            .json(&body)
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        if resp.code != 0 {
+            anyhow::bail!(
+                "tushare error: {}",
+                resp.msg.unwrap_or_else(|| "unknown".to_string())
+            );
+        }
+
+        let data = resp.data.ok_or_else(|| anyhow::anyhow!("empty tushare data"))?;
+        let mut stocks = Vec::new();
+        for item in data.items {
+            let symbol = item.first().and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let name = item.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let market = item.get(2).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            stocks.push(StockBasicDay { symbol, name, market });
+        }
+        Ok(stocks)
+    }
+
+    pub async fn fetch_index_basic(&self) -> anyhow::Result<Vec<StockBasicDay>> {
+        let body = serde_json::json!({
+            "api_name": "index_basic",
+            "token": self.token,
+            "params": {},
+            "fields": "ts_code,name,market"
+        });
+
+        let resp: TushareResponse = self
+            .client
+            .post(&self.base_url)
+            .json(&body)
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        if resp.code != 0 {
+            anyhow::bail!(
+                "tushare error: {}",
+                resp.msg.unwrap_or_else(|| "unknown".to_string())
+            );
+        }
+
+        let data = resp.data.ok_or_else(|| anyhow::anyhow!("empty tushare data"))?;
+        let mut indices = Vec::new();
+        for item in data.items {
+            let ts_code = item.first().and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let name = item.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let market = item.get(2).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let symbol = ts_code.split('.').next().unwrap_or("").to_string();
+            indices.push(StockBasicDay { symbol, name, market });
+        }
+        Ok(indices)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StockBasicDay {
+    pub symbol: String,
+    pub name: String,
+    pub market: String,
 }

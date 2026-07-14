@@ -1,4 +1,4 @@
-﻿# 通达信数据维护系统 - 构建并重启脚本
+# 通达信数据维护系统 - 构建并重启脚本
 # Usage: .\restart.ps1          (debug 模式)
 #        .\restart.ps1 -Release (release 模式)
 
@@ -42,6 +42,16 @@ if ($portCheck) {
 
 # 2. Build
 Write-Host "`n[2/3] 构建项目..." -ForegroundColor Yellow
+
+$distHtml = "$projectRoot\crates\tdx-web\dist\index.html"
+if (-not (Test-Path $distHtml)) {
+    Write-Host "  检测到前端尚未构建，正在编译前端..." -ForegroundColor Yellow
+    Push-Location "$projectRoot\crates\tdx-web"
+    npm install
+    npm run build
+    Pop-Location
+}
+
 # Prepend cargo and rtools to PATH to ensure compiling succeeds in the local environment
 $env:PATH = "C:\Users\zhang\.cargo\bin;C:\rtools45\x86_64-w64-mingw32.static.posix\bin;" + $env:PATH
 if ($Release) {

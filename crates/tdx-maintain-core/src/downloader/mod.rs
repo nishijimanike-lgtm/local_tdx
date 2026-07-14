@@ -470,6 +470,165 @@ impl DownloaderService {
             &format!("本地数据校验完成: {} 有效, {} 跳过, {} 失败", stats.done, stats.skipped, stats.failed));
         Ok(stats)
     }
+
+    pub async fn sync_stocks(&self) -> anyhow::Result<()> {
+        info!("Starting stock metadata sync...");
+        let repo = crate::db::repos::StockRepo::new(&self.pool);
+
+        // 1. Try TDX TCP sync first
+        let mut tdx_ok = false;
+        let markets_to_dl: Vec<(&str, u16)> = vec![
+            ("sh", 1),
+            ("sz", 0),
+        ];
+
+        for &(name, mkt) in &markets_to_dl {
+            let mut tcp = match self.get_tcp_connection(mkt).await {
+                Ok(t) => t,
+                Err(e) => {
+                    warn!("无法连接 {} 市场行情服务器: {}", name, e);
+                    continue;
+                }
+            };
+
+            let mut security_count = rustdx::tcp::SecurityCount::new(mkt);
+            let count = match security_count.recv_parsed(&mut tcp) {
+                Ok(c) => *c,
+                Err(e) => {
+                    warn!("无法获取 {} 证券数量: {}", name, e);
+                    continue;
+                }
+            };
+
+            let mut start: u16 = 0;
+            let mut success_in_market = true;
+            while start < count {
+                let mut list = rustdx::tcp::SecurityList::new(mkt, start);
+                use rustdx::tcp::Tdx;
+                match list.recv_parsed(&mut tcp) {
+                    Ok(data) => {
+                        for item in data.iter() {
+                            let market = market_from_code(&item.code, mkt);
+                            let market_i = match market {
+                                Market::Sz => 0,
+                                Market::Sh => 1,
+                                Market::Bj => 2,
+                            };
+                            let initials = get_pinyin_initials(&item.name);
+                            repo.upsert(market_i, &item.code, &item.name, &initials).await?;
+                        }
+                        if data.len() < 1000 {
+                            break;
+                        }
+                        start += data.len() as u16;
+                    }
+                    Err(e) => {
+                        warn!("获取 {} 证券列表失败 (offset {}): {}", name, start, e);
+                        success_in_market = false;
+                        break;
+                    }
+                }
+            }
+            if success_in_market {
+                tdx_ok = true;
+            }
+        }
+
+        if tdx_ok {
+            info!("Stock metadata sync from TDX TCP completed successfully.");
+            return Ok(());
+        }
+
+        // 2. If TDX TCP fails, and Tushare is enabled, try Tushare
+        if self.config.tushare.enabled && !self.config.tushare.token.is_empty() {
+            info!("TDX TCP sync failed. Attempting Tushare fallback...");
+            let client = crate::tushare::TushareClient::new(
+                &self.config.tushare.token,
+                &self.config.tushare.base_url,
+            );
+
+            // Fetch stocks
+            match client.fetch_stock_basic().await {
+                Ok(stocks) => {
+                    info!("Tushare stock list fetched: {} items", stocks.len());
+                    for stock in stocks {
+                        let market_i = match stock.market.as_str() {
+                            "SH" => 1,
+                            "SZ" => 0,
+                            "BJ" => 2,
+                            _ => {
+                                if stock.symbol.starts_with("60") || stock.symbol.starts_with("68") { 1 }
+                                else if stock.symbol.starts_with("83") || stock.symbol.starts_with("87") || stock.symbol.starts_with("88") || stock.symbol.starts_with("43") { 2 }
+                                else { 0 }
+                            }
+                        };
+                        let initials = get_pinyin_initials(&stock.name);
+                        repo.upsert(market_i, &stock.symbol, &stock.name, &initials).await?;
+                    }
+                    tdx_ok = true;
+                }
+                Err(e) => {
+                    warn!("Tushare stock_basic fetch failed: {}", e);
+                }
+            }
+
+            // Fetch indices
+            match client.fetch_index_basic().await {
+                Ok(indices) => {
+                    info!("Tushare index list fetched: {} items", indices.len());
+                    for index in indices {
+                        let market_i = match index.market.as_str() {
+                            "SH" => 1,
+                            "SZ" => 0,
+                            "BJ" => 2,
+                            _ => {
+                                if index.symbol.starts_with("00") { 1 }
+                                else { 0 }
+                            }
+                        };
+                        let initials = get_pinyin_initials(&index.name);
+                        repo.upsert(market_i, &index.symbol, &index.name, &initials).await?;
+                    }
+                }
+                Err(e) => {
+                    warn!("Tushare index_basic fetch failed: {}", e);
+                }
+            }
+        }
+
+        if tdx_ok {
+            info!("Stock metadata sync from Tushare completed successfully.");
+            return Ok(());
+        }
+
+        // 3. Fallback: Scan local .day files and use code as name
+        info!("All online sources failed. Populating stocks table using local .day files...");
+        let local_symbols = list_day_symbols(std::path::Path::new(&self.config.paths.tdx_data_dir))?;
+        let count = local_symbols.len();
+        for (market, symbol) in local_symbols {
+            let market_i = match market {
+                Market::Sz => 0,
+                Market::Sh => 1,
+                Market::Bj => 2,
+            };
+            let fallback_name = format!("代码: {}", symbol);
+            let initials = get_pinyin_initials(&fallback_name);
+            repo.upsert(market_i, &symbol, &fallback_name, &initials).await?;
+        }
+        info!("Stocks database table populated with {} local symbols.", count);
+        Ok(())
+    }
+}
+
+fn get_pinyin_initials(name: &str) -> String {
+    use pinyin::ToPinyin;
+    let mut initials = String::new();
+    for pinyin in name.to_pinyin().flatten() {
+        if let Some(first_char) = pinyin.plain().chars().next() {
+            initials.push(first_char);
+        }
+    }
+    initials.to_lowercase()
 }
 
 
