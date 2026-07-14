@@ -601,8 +601,56 @@ impl DownloaderService {
             return Ok(());
         }
 
-        // 3. Fallback: Scan local .day files and use code as name
-        info!("All online sources failed. Populating stocks table using local .day files...");
+        // 3. Fallback: Try parsing local TDX standard cache files (shs.tnf, szs.tnf, bjs.tnf)
+        info!("Online sources failed. Attempting to parse local TDX cache files (shs.tnf, szs.tnf, bjs.tnf)...");
+        let hq_cache_dir = std::path::Path::new(&self.config.paths.tdx_data_dir)
+            .join("T0002")
+            .join("hq_cache");
+
+        let mut tnf_imported = 0;
+        if hq_cache_dir.exists() {
+            let sh_tnf = hq_cache_dir.join("shs.tnf");
+            let sz_tnf = hq_cache_dir.join("szs.tnf");
+            let bj_tnf = hq_cache_dir.join("bjs.tnf");
+
+            match parse_tnf_file(&sh_tnf, 1, &repo).await {
+                Ok(c) => {
+                    info!("Parsed shs.tnf successfully: imported {} symbols", c);
+                    tnf_imported += c;
+                }
+                Err(e) => {
+                    warn!("Failed to parse shs.tnf: {}", e);
+                }
+            }
+
+            match parse_tnf_file(&sz_tnf, 0, &repo).await {
+                Ok(c) => {
+                    info!("Parsed szs.tnf successfully: imported {} symbols", c);
+                    tnf_imported += c;
+                }
+                Err(e) => {
+                    warn!("Failed to parse szs.tnf: {}", e);
+                }
+            }
+
+            match parse_tnf_file(&bj_tnf, 2, &repo).await {
+                Ok(c) => {
+                    info!("Parsed bjs.tnf successfully: imported {} symbols", c);
+                    tnf_imported += c;
+                }
+                Err(e) => {
+                    warn!("Failed to parse bjs.tnf: {}", e);
+                }
+            }
+        }
+
+        if tnf_imported > 0 {
+            info!("Successfully populated stocks table with {} symbols from local TDX cache files.", tnf_imported);
+            return Ok(());
+        }
+
+        // 4. Last resort fallback: Scan local .day files and use code as name
+        info!("Local cache files failed or empty. Populating stocks table using local .day files...");
         let local_symbols = list_day_symbols(std::path::Path::new(&self.config.paths.tdx_data_dir))?;
         let count = local_symbols.len();
         for (market, symbol) in local_symbols {
@@ -620,12 +668,74 @@ impl DownloaderService {
     }
 }
 
+async fn parse_tnf_file(
+    path: &std::path::Path,
+    market_i: i32,
+    repo: &crate::db::repos::StockRepo<'_>,
+) -> anyhow::Result<i32> {
+    use std::io::Read;
+    if !path.exists() {
+        return Ok(0);
+    }
+    let mut file = std::fs::File::open(path)?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf)?;
+
+    if buf.len() < 50 {
+        return Ok(0);
+    }
+
+    let records_data = &buf[50..];
+    let record_size = 360;
+    let mut count = 0;
+
+    for chunk in records_data.chunks_exact(record_size) {
+        let code_bytes = &chunk[0..6];
+        let code = String::from_utf8_lossy(code_bytes).trim_matches('\0').trim().to_string();
+        if code.len() != 6 || !code.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+
+        let name_bytes = &chunk[31..49];
+        let end_idx = name_bytes.iter().position(|&x| x == 0).unwrap_or(18);
+        let name_bytes_valid = &name_bytes[..end_idx];
+        
+        let (decoded, _, _) = encoding_rs::GBK.decode(name_bytes_valid);
+        let name = decoded.trim().to_string();
+        if name.is_empty() {
+            continue;
+        }
+
+        let initials = get_pinyin_initials(&name);
+        repo.upsert(market_i, &code, &name, &initials).await?;
+        count += 1;
+    }
+
+    Ok(count)
+}
+
 fn get_pinyin_initials(name: &str) -> String {
     use pinyin::ToPinyin;
     let mut initials = String::new();
-    for pinyin in name.to_pinyin().flatten() {
-        if let Some(first_char) = pinyin.plain().chars().next() {
-            initials.push(first_char);
+    let chars: Vec<char> = name.chars().collect();
+    for (idx, &c) in chars.iter().enumerate() {
+        if c == '重' && idx + 1 < chars.len() && chars[idx + 1] == '庆' {
+            initials.push('c');
+            continue;
+        }
+        if c == '行' {
+            initials.push('h');
+            continue;
+        }
+
+        if let Some(pinyin) = c.to_pinyin() {
+            if let Some(first_char) = pinyin.plain().chars().next() {
+                initials.push(first_char);
+            }
+        } else {
+            if c.is_ascii_alphanumeric() {
+                initials.push(c);
+            }
         }
     }
     initials.to_lowercase()

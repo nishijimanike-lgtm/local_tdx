@@ -2806,6 +2806,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "config",
+ "encoding_rs",
  "futures",
  "parquet",
  "pinyin",

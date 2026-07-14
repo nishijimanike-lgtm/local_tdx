@@ -60,6 +60,13 @@ const selectStock = (stock: Stock) => {
   showDropdown.value = false
 }
 
+// Clear Search
+const clearSearch = () => {
+  searchQuery.value = ''
+  searchResults.value = []
+  showDropdown.value = false
+}
+
 // Hide dropdown on click outside
 const onClickOutside = (e: MouseEvent) => {
   const target = e.target as HTMLElement
@@ -369,7 +376,7 @@ onUnmounted(() => {
 <template>
   <div class="space-y-6 flex flex-col h-full overflow-hidden">
     <!-- Options Bar -->
-    <div class="glass-panel rounded-xl p-4 border border-slate-800/50 flex flex-wrap items-center gap-4 shrink-0 justify-between">
+    <div class="glass-panel rounded-xl p-4 border border-slate-800/50 flex flex-wrap items-center gap-4 shrink-0 justify-between relative z-50">
       <!-- Search Input -->
       <div class="search-container relative w-72">
         <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-500">
@@ -383,8 +390,18 @@ onUnmounted(() => {
           @focus="showDropdown = searchResults.length > 0"
           type="text"
           placeholder="输入股票代码、名称或拼音首字母..."
-          class="w-full bg-slate-900 border border-slate-800 rounded-lg pl-9 pr-4 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500/50 transition-colors placeholder:text-slate-500 font-sans"
+          class="w-full bg-slate-900 border border-slate-800 rounded-lg pl-9 pr-9 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500/50 transition-colors placeholder:text-slate-500 font-sans"
         />
+        <button
+          v-if="searchQuery"
+          @click="clearSearch"
+          type="button"
+          class="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-500 hover:text-slate-300 transition-colors"
+        >
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
 
         <!-- Dropdown menu -->
         <div v-if="showDropdown" class="absolute z-50 left-0 right-0 mt-2 bg-slate-900 border border-slate-800 rounded-lg max-h-60 overflow-y-auto shadow-2xl">
