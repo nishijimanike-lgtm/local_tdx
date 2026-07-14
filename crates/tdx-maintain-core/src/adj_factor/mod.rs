@@ -1,11 +1,24 @@
 use crate::config::AppConfig;
-use crate::db::models::{now_iso, AdjFactorRow};
+use crate::db::models::now_iso;
 use crate::db::repos::SyncMetaRepo;
 use crate::alert::AlertEngine;
 use crate::tdx::{list_day_symbols, DailyBarReader, get_day_filename};
 use crate::downloader::DownloadStats;
 use sqlx::SqlitePool;
 use std::sync::Arc;
+
+/// Local data structure for adjustment factor rows.
+/// This is NOT a database model — factors are stored in Parquet files.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AdjFactorRow {
+    pub market: i32,
+    pub symbol: String,
+    pub trade_date: String,
+    pub adj_factor: f64,
+    pub data_source: String,
+    pub confidence: String,
+    pub updated_at: String,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AdjFactorTier {
@@ -210,4 +223,69 @@ fn write_parquet_file(path: &std::path::Path, rows: &[AdjFactorRow]) -> anyhow::
     writer.close()?;
 
     Ok(())
+}
+
+/// Helper function to read a symbol's factor rows from a Parquet file
+pub fn read_parquet_file(path: &std::path::Path) -> anyhow::Result<Vec<AdjFactorRow>> {
+    use arrow::record_batch::RecordBatch;
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    let file = std::fs::File::open(path)
+        .map_err(|e| anyhow::anyhow!("无法打开 Parquet 文件 {}: {e}", path.display()))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+    let reader = builder.build()?;
+
+    let mut rows = Vec::new();
+    for batch_result in reader {
+        let batch: RecordBatch = batch_result?;
+        let market_arr = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::Int32Array>()
+            .ok_or_else(|| anyhow::anyhow!("无法读取 market 列"))?;
+        let symbol_arr = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<arrow::array::StringArray>()
+            .ok_or_else(|| anyhow::anyhow!("无法读取 symbol 列"))?;
+        let trade_date_arr = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<arrow::array::StringArray>()
+            .ok_or_else(|| anyhow::anyhow!("无法读取 trade_date 列"))?;
+        let adj_factor_arr = batch
+            .column(3)
+            .as_any()
+            .downcast_ref::<arrow::array::Float64Array>()
+            .ok_or_else(|| anyhow::anyhow!("无法读取 adj_factor 列"))?;
+        let data_source_arr = batch
+            .column(4)
+            .as_any()
+            .downcast_ref::<arrow::array::StringArray>()
+            .ok_or_else(|| anyhow::anyhow!("无法读取 data_source 列"))?;
+        let confidence_arr = batch
+            .column(5)
+            .as_any()
+            .downcast_ref::<arrow::array::StringArray>()
+            .ok_or_else(|| anyhow::anyhow!("无法读取 confidence 列"))?;
+        let updated_at_arr = batch
+            .column(6)
+            .as_any()
+            .downcast_ref::<arrow::array::StringArray>()
+            .ok_or_else(|| anyhow::anyhow!("无法读取 updated_at 列"))?;
+
+        for i in 0..batch.num_rows() {
+            rows.push(AdjFactorRow {
+                market: market_arr.value(i),
+                symbol: symbol_arr.value(i).to_string(),
+                trade_date: trade_date_arr.value(i).to_string(),
+                adj_factor: adj_factor_arr.value(i),
+                data_source: data_source_arr.value(i).to_string(),
+                confidence: confidence_arr.value(i).to_string(),
+                updated_at: updated_at_arr.value(i).to_string(),
+            });
+        }
+    }
+
+    Ok(rows)
 }

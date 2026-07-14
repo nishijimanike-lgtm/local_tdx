@@ -308,152 +308,57 @@ impl<'a> XdxrRepo<'a> {
     }
 }
 
-pub struct AdjFactorRepo<'a> {
+
+pub struct DownloadCheckpointRepo<'a> {
     pool: &'a SqlitePool,
 }
 
-impl<'a> AdjFactorRepo<'a> {
+impl<'a> DownloadCheckpointRepo<'a> {
     pub fn new(pool: &'a SqlitePool) -> Self {
         Self { pool }
     }
 
-    pub async fn upsert(&self, row: &AdjFactorRow) -> anyhow::Result<()> {
+    pub async fn save(&self, change_name: &str, market: &str, last_symbol: &str, progress: i32, total: i32) -> anyhow::Result<()> {
+        let now = now_iso();
         sqlx::query(
-            "INSERT INTO adj_factor (market, symbol, trade_date, adj_factor, data_source, confidence, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT(market, symbol, trade_date) DO UPDATE SET
-               adj_factor=excluded.adj_factor, data_source=excluded.data_source,
-               confidence=excluded.confidence, updated_at=excluded.updated_at",
+            "INSERT INTO download_checkpoint (change_name, market, last_symbol, progress, total, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(change_name, market) DO UPDATE SET
+               last_symbol = excluded.last_symbol, progress = excluded.progress,
+               total = excluded.total, updated_at = excluded.updated_at",
         )
-        .bind(row.market)
-        .bind(&row.symbol)
-        .bind(&row.trade_date)
-        .bind(row.adj_factor)
-        .bind(&row.data_source)
-        .bind(&row.confidence)
-        .bind(&row.updated_at)
+        .bind(change_name)
+        .bind(market)
+        .bind(last_symbol)
+        .bind(progress)
+        .bind(total)
+        .bind(&now)
         .execute(self.pool)
         .await?;
         Ok(())
     }
 
-    pub async fn upsert_batch(&self, rows: &[AdjFactorRow]) -> anyhow::Result<()> {
-        if rows.is_empty() {
-            return Ok(());
-        }
-        let mut tx = self.pool.begin().await?;
-        
-        // SQLite parameter limit is 999. With 7 columns, maximum batch size is 999 / 7 = 142.
-        // We use a safe chunk size of 100.
-        for chunk in rows.chunks(100) {
-            let mut sql = String::from(
-                "INSERT INTO adj_factor (market, symbol, trade_date, adj_factor, data_source, confidence, updated_at) VALUES "
-            );
-            
-            for i in 0..chunk.len() {
-                if i > 0 {
-                    sql.push_str(", ");
-                }
-                sql.push_str("(?, ?, ?, ?, ?, ?, ?)");
-            }
-            
-            sql.push_str(
-                " ON CONFLICT(market, symbol, trade_date) DO UPDATE SET \
-                 adj_factor=excluded.adj_factor, data_source=excluded.data_source, \
-                 confidence=excluded.confidence, updated_at=excluded.updated_at"
-            );
-            
-            let mut query = sqlx::query(&sql);
-            for row in chunk {
-                query = query
-                    .bind(row.market)
-                    .bind(&row.symbol)
-                    .bind(&row.trade_date)
-                    .bind(row.adj_factor)
-                    .bind(&row.data_source)
-                    .bind(&row.confidence)
-                    .bind(&row.updated_at);
-            }
-            
-            query.execute(&mut *tx).await?;
-        }
-        
-        tx.commit().await?;
-        Ok(())
-    }
-
-    pub async fn get(
-        &self,
-        market: i32,
-        symbol: &str,
-        trade_date: &str,
-    ) -> anyhow::Result<Option<AdjFactorRow>> {
+    pub async fn load(&self, change_name: &str, market: &str) -> anyhow::Result<Option<DownloadCheckpointRow>> {
         Ok(sqlx::query_as(
-            "SELECT market, symbol, trade_date, adj_factor, data_source, confidence, updated_at
-             FROM adj_factor WHERE market = ? AND symbol = ? AND trade_date = ?",
+            "SELECT change_name, market, last_symbol, progress, total, updated_at
+             FROM download_checkpoint WHERE change_name = ? AND market = ?",
         )
+        .bind(change_name)
         .bind(market)
-        .bind(symbol)
-        .bind(trade_date)
         .fetch_optional(self.pool)
         .await?)
     }
 
-    pub async fn latest_date(
-        &self,
-        market: i32,
-        symbol: &str,
-    ) -> anyhow::Result<Option<String>> {
-        let row: Option<(String,)> = sqlx::query_as(
-            "SELECT trade_date FROM adj_factor WHERE market = ? AND symbol = ? ORDER BY trade_date DESC LIMIT 1",
-        )
-        .bind(market)
-        .bind(symbol)
-        .fetch_optional(self.pool)
-        .await?;
-        Ok(row.map(|r| r.0))
-    }
-
-    pub async fn count_symbols(&self) -> anyhow::Result<i64> {
-        let row: (i64,) = sqlx::query_as(
-            "SELECT COUNT(DISTINCT market || ':' || symbol) FROM adj_factor",
-        )
-        .fetch_one(self.pool)
-        .await?;
-        Ok(row.0)
-    }
-
-    pub async fn list_validation(&self, limit: i64) -> anyhow::Result<Vec<FactorValidationRow>> {
-        Ok(sqlx::query_as(
-            "SELECT market, symbol, trade_date, tushare_value, local_value, diff_pct, status, checked_at
-             FROM factor_validation ORDER BY checked_at DESC LIMIT ?",
-        )
-        .bind(limit)
-        .fetch_all(self.pool)
-        .await?)
-    }
-
-    pub async fn upsert_validation(&self, row: &FactorValidationRow) -> anyhow::Result<()> {
-        sqlx::query(
-            "INSERT INTO factor_validation (market, symbol, trade_date, tushare_value, local_value, diff_pct, status, checked_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT(market, symbol, trade_date) DO UPDATE SET
-               tushare_value=excluded.tushare_value, local_value=excluded.local_value,
-               diff_pct=excluded.diff_pct, status=excluded.status, checked_at=excluded.checked_at",
-        )
-        .bind(row.market)
-        .bind(&row.symbol)
-        .bind(&row.trade_date)
-        .bind(row.tushare_value)
-        .bind(row.local_value)
-        .bind(row.diff_pct)
-        .bind(&row.status)
-        .bind(&row.checked_at)
-        .execute(self.pool)
-        .await?;
+    pub async fn clear(&self, change_name: &str) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM download_checkpoint WHERE change_name = ?")
+            .bind(change_name)
+            .execute(self.pool)
+            .await?;
         Ok(())
     }
 }
+
+
 
 pub struct ScanRepo<'a> {
     pool: &'a SqlitePool,

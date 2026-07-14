@@ -7,7 +7,7 @@ use crate::downloader::DownloaderService;
 use crate::scanner::ScannerService;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
-use std::sync::Arc;
+use std::sync::{atomic::{AtomicU8, Ordering}, Arc};
 use tokio::sync::{broadcast, Mutex};
 use tracing::info;
 
@@ -54,10 +54,14 @@ impl TaskKind {
     }
 }
 
+const CTRL_NORMAL: u8 = 0;
+const CTRL_PAUSED: u8 = 1;
+const CTRL_ABORTED: u8 = 2;
+
 pub struct ActiveTask {
     pub task_id: i64,
     pub kind: TaskKind,
-    pub stdin: Option<tokio::process::ChildStdin>,
+    pub control: Arc<AtomicU8>,
     pub paused: bool,
     pub aborted: bool,
     pub done: i32,
@@ -103,19 +107,12 @@ impl TaskQueue {
     }
 
     pub async fn pause(&self) -> anyhow::Result<()> {
-        let mut guard = self.active_task.lock().await;
-        if let Some(ref mut task) = *guard {
+        let guard = self.active_task.lock().await;
+        if let Some(ref task) = *guard {
             if task.paused {
                 return Ok(());
             }
-            if let Some(ref mut stdin) = task.stdin {
-                use tokio::io::AsyncWriteExt;
-                stdin.write_all(b"PAUSE\n").await?;
-                stdin.flush().await?;
-            }
-            task.paused = true;
-            
-            // Broadcast pause progress event
+            task.control.store(CTRL_PAUSED, Ordering::Relaxed);
             let progress = TaskProgress {
                 task_id: task.task_id,
                 task_type: task.kind.as_str().to_string(),
@@ -136,19 +133,12 @@ impl TaskQueue {
     }
 
     pub async fn resume(&self) -> anyhow::Result<()> {
-        let mut guard = self.active_task.lock().await;
-        if let Some(ref mut task) = *guard {
+        let guard = self.active_task.lock().await;
+        if let Some(ref task) = *guard {
             if !task.paused {
                 return Ok(());
             }
-            if let Some(ref mut stdin) = task.stdin {
-                use tokio::io::AsyncWriteExt;
-                stdin.write_all(b"RESUME\n").await?;
-                stdin.flush().await?;
-            }
-            task.paused = false;
-            
-            // Broadcast resume progress event
+            task.control.store(CTRL_NORMAL, Ordering::Relaxed);
             let progress = TaskProgress {
                 task_id: task.task_id,
                 task_type: task.kind.as_str().to_string(),
@@ -169,14 +159,9 @@ impl TaskQueue {
     }
 
     pub async fn abort(&self) -> anyhow::Result<()> {
-        let mut guard = self.active_task.lock().await;
-        if let Some(ref mut task) = *guard {
-            if let Some(ref mut stdin) = task.stdin {
-                use tokio::io::AsyncWriteExt;
-                let _ = stdin.write_all(b"ABORT\n").await;
-                let _ = stdin.flush().await;
-            }
-            task.aborted = true;
+        let guard = self.active_task.lock().await;
+        if let Some(ref task) = *guard {
+            task.control.store(CTRL_ABORTED, Ordering::Relaxed);
             Ok(())
         } else {
             anyhow::bail!("没有运行中的任务可以中止");
@@ -204,7 +189,7 @@ impl TaskQueue {
                 *guard = Some(ActiveTask {
                     task_id,
                     kind,
-                    stdin: None,
+                    control: Arc::new(AtomicU8::new(CTRL_NORMAL)),
                     paused: false,
                     aborted: false,
                     done: 0,
@@ -216,7 +201,7 @@ impl TaskQueue {
             }
 
             let result = tokio::time::timeout(
-                std::time::Duration::from_secs(3600), // 1 hour max per task
+                std::time::Duration::from_secs(3600),
                 run_task(pool.clone(), config, alerts.clone(), kind, task_id, progress_tx, active_task.clone()),
             )
             .await;
@@ -227,9 +212,7 @@ impl TaskQueue {
             }
 
             match result {
-                Ok(Ok(())) => {
-                    // task completed successfully
-                }
+                Ok(Ok(())) => {}
                 Ok(Err(e)) => {
                     tracing::error!("task {} failed: {e}", task_id);
                     let _ = alerts
@@ -333,46 +316,25 @@ async fn run_task(
                 TaskKind::DailyGapFill => crate::downloader::UpdateMode::GapFill,
                 _ => unreachable!(),
             };
-            
-            let active_task_for_stdin = active_task.clone();
+
+            let control = {
+                let guard = active_task.lock().await;
+                guard.as_ref().map(|t| t.control.clone()).unwrap_or_else(|| Arc::new(AtomicU8::new(CTRL_NORMAL)))
+            };
             let stats = dl
                 .run_daily_update(
                     mode,
                     |done, skipped, failed, total, msg| {
                         emit(done, skipped, failed, total, msg, false);
                     },
-                    move |stdin| {
-                        if let Ok(mut guard) = active_task_for_stdin.try_lock() {
-                            if let Some(ref mut task) = *guard {
-                                task.stdin = Some(stdin);
-                            }
-                        }
-                    }
+                    control,
                 )
                 .await?;
-            let status = if stats.failed > 0 {
-                "partial"
-            } else {
-                "success"
-            };
-            emit(
-                stats.done,
-                stats.skipped,
-                stats.failed,
-                stats.total,
-                "日线更新完成",
-                true,
-            );
+            let status = if stats.failed > 0 { "partial" } else { "success" };
+            emit(stats.done, stats.skipped, stats.failed, stats.total, "日线更新完成", true);
             let detail = serde_json::to_string(&stats)?;
             TaskLogRepo::new(&pool)
-                .finish(
-                    task_id,
-                    status,
-                    stats.done,
-                    stats.skipped,
-                    stats.failed,
-                    Some(&detail),
-                )
+                .finish(task_id, status, stats.done, stats.skipped, stats.failed, Some(&detail))
                 .await?;
             SyncMetaRepo::new(&pool)
                 .set("last_daily_update", &chrono::Utc::now().to_rfc3339())
@@ -385,23 +347,9 @@ async fn run_task(
                     emit(done, skipped, failed, total, msg, false);
                 })
                 .await?;
-            emit(
-                stats.done,
-                stats.skipped,
-                stats.failed,
-                stats.total,
-                "XDXR 同步完成",
-                true,
-            );
+            emit(stats.done, stats.skipped, stats.failed, stats.total, "XDXR 同步完成", true);
             TaskLogRepo::new(&pool)
-                .finish(
-                    task_id,
-                    "success",
-                    stats.done,
-                    stats.skipped,
-                    stats.failed,
-                    None,
-                )
+                .finish(task_id, "success", stats.done, stats.skipped, stats.failed, None)
                 .await?;
         }
         TaskKind::AdjFactorSync => {
@@ -411,23 +359,9 @@ async fn run_task(
                     emit(done, skipped, failed, total, msg, false);
                 })
                 .await?;
-            emit(
-                stats.done,
-                stats.skipped,
-                stats.failed,
-                stats.total,
-                "复权因子更新完成",
-                true,
-            );
+            emit(stats.done, stats.skipped, stats.failed, stats.total, "复权因子更新完成", true);
             TaskLogRepo::new(&pool)
-                .finish(
-                    task_id,
-                    "success",
-                    stats.done,
-                    stats.skipped,
-                    stats.failed,
-                    None,
-                )
+                .finish(task_id, "success", stats.done, stats.skipped, stats.failed, None)
                 .await?;
             SyncMetaRepo::new(&pool)
                 .set("last_adj_factor_update", &chrono::Utc::now().to_rfc3339())
@@ -461,11 +395,7 @@ pub async fn probe_adj_factor_tier(config: &AppConfig, pool: &SqlitePool) -> any
     }
     let client = crate::tushare::TushareClient::new(&config.tushare.token, &config.tushare.base_url);
     let ok = client.probe().await.unwrap_or(false);
-    let tier = if ok {
-        AdjFactorTier::L0
-    } else {
-        AdjFactorTier::L3
-    };
+    let tier = if ok { AdjFactorTier::L0 } else { AdjFactorTier::L3 };
     let tier_str = tier.to_string();
     let old = SyncMetaRepo::new(pool).get("adj_factor_tier").await?;
     SyncMetaRepo::new(pool).set("adj_factor_tier", &tier_str).await?;
@@ -473,9 +403,7 @@ pub async fn probe_adj_factor_tier(config: &AppConfig, pool: &SqlitePool) -> any
         .set("last_probe_at", &chrono::Utc::now().to_rfc3339())
         .await?;
     if let Some(old) = old {
-        if old != tier_str {
-            // tier changed - caller should alert
-        }
+        if old != tier_str {}
     }
     Ok(tier)
 }

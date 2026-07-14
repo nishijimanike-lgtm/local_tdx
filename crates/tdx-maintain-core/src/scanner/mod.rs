@@ -215,40 +215,95 @@ impl ScannerService {
         let exchange = &self.config.calendar.exchange;
         let latest_trading_day = calendar_repo.latest_trading_day(exchange).await?;
 
-        let total_factors: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM adj_factor")
-            .fetch_one(&self.pool)
-            .await?;
+        let parquet_dir = self.config.paths.parquet_dir.clone();
+        let latest_day = latest_trading_day.clone();
 
-        let unique_symbols: (i64,) = sqlx::query_as("SELECT COUNT(DISTINCT symbol) FROM adj_factor")
-            .fetch_one(&self.pool)
-            .await?;
-
-        let mut lagging_symbols = Vec::new();
-        if let Some(ref latest_day) = latest_trading_day {
-            // Find symbols whose latest adj_factor trade_date is older than latest_trading_day
-            let rows: Vec<(i32, String, String)> = sqlx::query_as(
-                "SELECT market, symbol, MAX(trade_date) FROM adj_factor GROUP BY market, symbol HAVING MAX(trade_date) < ?"
-            )
-            .bind(latest_day)
-            .fetch_all(&self.pool)
-            .await?;
-
-            for r in rows {
-                lagging_symbols.push(json!({
-                    "market": r.0,
-                    "symbol": r.1,
-                    "latest_factor_date": r.2
-                }));
+        // Spawn blocking I/O to scan Parquet directory and read all factor data
+        let result = tokio::task::spawn_blocking(move || {
+            let parquet_path = std::path::Path::new(&parquet_dir);
+            if !parquet_path.exists() {
+                return json!({
+                    "summary": {
+                        "total_factors": 0,
+                        "unique_symbols": 0,
+                        "lagging_symbols_count": 0,
+                        "note": "Parquet 目录不存在"
+                    },
+                    "lagging_symbols": []
+                });
             }
-        }
 
-        Ok(json!({
-            "summary": {
-                "total_factors": total_factors.0,
-                "unique_symbols": unique_symbols.0,
-                "lagging_symbols_count": lagging_symbols.len()
-            },
-            "lagging_symbols": lagging_symbols
-        }))
+            let mut total_factors: i64 = 0;
+            let mut unique_symbols: i64 = 0;
+            let mut lagging_symbols = Vec::new();
+
+            // Iterate over market subdirectories (sh/, sz/, bj/)
+            if let Ok(entries) = std::fs::read_dir(&parquet_path) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if !path.is_dir() {
+                        continue;
+                    }
+                    let market_name = path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+
+                    // Read each .parquet file in the market directory
+                    if let Ok(files) = std::fs::read_dir(&path) {
+                        for file_entry in files.flatten() {
+                            let file_path = file_entry.path();
+                            if file_path.extension().map_or(true, |e| e != "parquet") {
+                                continue;
+                            }
+                            let symbol = file_path.file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("unknown")
+                                .to_string();
+
+                            // Read parquet file to get statistics
+                            match crate::adj_factor::read_parquet_file(&file_path) {
+                                Ok(rows) => {
+                                    total_factors += rows.len() as i64;
+                                    unique_symbols += 1;
+
+                                    // Check if the latest factor date is behind the latest trading day
+                                    if let Some(ref latest) = latest_day {
+                                        let last_factor_date = rows.last()
+                                            .map(|r| r.trade_date.as_str())
+                                            .unwrap_or("");
+                                        if last_factor_date < latest.as_str() {
+                                            lagging_symbols.push(json!({
+                                                "market": market_name,
+                                                "symbol": symbol,
+                                                "latest_factor_date": last_factor_date
+                                            }));
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    lagging_symbols.push(json!({
+                                        "market": market_name,
+                                        "symbol": symbol,
+                                        "error": format!("无法读取: {e}")
+                                    }));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            json!({
+                "summary": {
+                    "total_factors": total_factors,
+                    "unique_symbols": unique_symbols,
+                    "lagging_symbols_count": lagging_symbols.len()
+                },
+                "lagging_symbols": lagging_symbols
+            })
+        }).await.map_err(|e| anyhow::anyhow!("spawn_blocking 失败: {e}"))?;
+
+        Ok(result)
     }
 }

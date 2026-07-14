@@ -35,3 +35,4 @@ uuid = { version = "1", features = ["v4", "serde"] }
 toml = "0.8"
 arrow = "53.0.0"
 parquet = { version = "53.0.0", features = ["arrow", "zstd"] }
+rustdx = "0.4"

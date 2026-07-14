@@ -36,3 +36,7 @@ port = 8080
 base_url = "http://api.tushare.pro"
 enabled = true
 token = "fd1955044e1b5bd57964111aa211c6a0332f2fb4d8020ee67ceec082"
+
+[retry]
+max_attempts = 3
+backoff_ms = 1000

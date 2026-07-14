@@ -22,3 +22,4 @@ tracing.workspace = true
 uuid.workspace = true
 arrow.workspace = true
 parquet.workspace = true
+rustdx.workspace = true

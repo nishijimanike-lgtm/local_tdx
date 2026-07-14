@@ -2,13 +2,16 @@
 
 This plan outlines the changes to migrate/augment the storage of cumulative forward adjustment factors from the local SQLite database to compressed Parquet files using the `arrow` and `parquet` crates.
 
+> **Status Update**: The implementation has been simplified from the original dual-write plan (SQLite + Parquet) to **Parquet-only** storage. The SQLite `adj_factor` table and `factor_validation` table have been dropped in migration `002_remove_adj_factor.sql`. The system now writes factors exclusively to `{parquet_dir}/{market}/{symbol}.parquet` with Zstd compression.
+
 ## User Review Required
 
 > [!IMPORTANT]
 > - We will add `arrow = "53.0.0"` and `parquet = { version = "53.0.0", features = ["arrow", "zstd"] }` to the workspace dependencies.
 > - A new path parameter `parquet_dir` will be added to the settings under `[paths]`. The default directory will be `D:\tdx_maintain\parquet`.
-> - During the `adj_factor_update` sync task, the system will save the computed factors to `{parquet_dir}/{market}/{symbol}.parquet` (with Zstd compression) in addition to updating the SQLite database.
-> - This parallel-write approach allows existing Web UI and DB queries to function perfectly while generating the optimized Parquet dataset for future Polars integration.
+> - During the `adj_factor_update` sync task, the system will save the computed factors to `{parquet_dir}/{market}/{symbol}.parquet` (with Zstd compression). ~~in addition to updating the SQLite database.~~
+> - ~~This parallel-write approach allows existing Web UI and DB queries to function perfectly while generating the optimized Parquet dataset for future Polars integration.~~
+> - **Actual implementation**: Factors are stored **only** in Parquet format. The dashboard reads file counts directly from the `parquet_dir` directory. The scanner also reads from Parquet files for validation.
 
 ## Open Questions
 

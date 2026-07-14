@@ -108,6 +108,19 @@ CREATE TABLE IF NOT EXISTS scan_results (
     finished_at TEXT
 );
 
+-- ============================================================
+-- 下载断点续传表
+-- ============================================================
+CREATE TABLE IF NOT EXISTS download_checkpoint (
+    change_name  TEXT NOT NULL,
+    market       TEXT NOT NULL,       -- 'sh' / 'sz' / 'bj'
+    last_symbol  TEXT NOT NULL,
+    progress     INTEGER NOT NULL DEFAULT 0,
+    total        INTEGER NOT NULL DEFAULT 0,
+    updated_at   TEXT NOT NULL,
+    PRIMARY KEY (change_name, market)
+);
+
 -- 预置 sync_meta 键值
 INSERT OR IGNORE INTO sync_meta (key, value, updated_at) VALUES
     ('adj_factor_tier', 'L3', datetime('now')),

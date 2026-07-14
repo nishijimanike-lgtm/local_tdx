@@ -38,6 +38,7 @@ struct UpdateSettingsRequest {
     adj_factor: AdjFactorConfigData,
     alerts: AlertsConfigData,
     schedule: ScheduleConfigData,
+    retry: RetryConfigData,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -93,6 +94,12 @@ struct ScheduleConfigData {
     adj_factor_sync_cron: String,
     calendar_check_cron: String,
     weekly_scan_cron: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct RetryConfigData {
+    max_attempts: u32,
+    backoff_ms: u64,
 }
 
 #[tokio::main]
@@ -220,7 +227,7 @@ async fn start_scheduler(state: AppState) -> anyhow::Result<()> {
 
 // Handler: Serve Frontend Dashboard
 async fn serve_dashboard() -> impl IntoResponse {
-    Html(include_str!("index.html"))
+    Html(include_str!("../../tdx-web/dist/index.html"))
 }
 
 // Handler: Health Check
@@ -322,7 +329,6 @@ async fn get_dashboard(State(state): State<AppState>) -> Result<impl IntoRespons
     let meta_repo = SyncMetaRepo::new(&state.pool);
     let calendar_repo = CalendarRepo::new(&state.pool);
     let xdxr_repo = XdxrRepo::new(&state.pool);
-    let adj_repo = AdjFactorRepo::new(&state.pool);
 
     let adj_factor_tier = meta_repo.get("adj_factor_tier").await.unwrap_or(None).unwrap_or_else(|| "L3".to_string());
     let last_probe_at = meta_repo.get("last_probe_at").await.unwrap_or(None).unwrap_or_default();
@@ -332,7 +338,26 @@ async fn get_dashboard(State(state): State<AppState>) -> Result<impl IntoRespons
 
     let open_days_count = calendar_repo.count_open_days(&state.config.calendar.exchange).await.unwrap_or(0);
     let xdxr_events_count = xdxr_repo.count().await.unwrap_or(0);
-    let adj_factor_symbols_count = adj_repo.count_symbols().await.unwrap_or(0);
+    let adj_factor_symbols_count = {
+        let parquet_dir = state.config.paths.parquet_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            let path = std::path::Path::new(&parquet_dir);
+            if !path.exists() { return 0i64; }
+            let mut count = 0i64;
+            if let Ok(entries) = std::fs::read_dir(path) {
+                for entry in entries.flatten() {
+                    if entry.path().is_dir() {
+                        if let Ok(files) = std::fs::read_dir(entry.path()) {
+                            count += files.flatten()
+                                .filter(|f| f.path().extension().map_or(false, |e| e == "parquet"))
+                                .count() as i64;
+                        }
+                    }
+                }
+            }
+            count
+        }).await.unwrap_or(0)
+    };
 
     // Compute daily bar date range from benchmark index files (SH 000001 and SZ 399001)
     let tdx_data_dir = state.config.paths.tdx_data_dir.clone();
@@ -551,6 +576,7 @@ async fn update_settings(
         "adj_factor": payload.adj_factor,
         "alerts": payload.alerts,
         "schedule": payload.schedule,
+        "retry": payload.retry,
     })).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to generate TOML: {e}")))?;
 
     let config_path = std::env::var("TDX_MAINTAIN_CONFIG")

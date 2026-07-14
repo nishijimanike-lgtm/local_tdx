@@ -10,6 +10,7 @@ pub struct AppConfig {
     pub adj_factor: AdjFactorConfig,
     pub alerts: AlertsConfig,
     pub schedule: ScheduleConfig,
+    pub retry: RetryConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -65,6 +66,12 @@ pub struct ScheduleConfig {
     pub adj_factor_sync_cron: String,
     pub calendar_check_cron: String,
     pub weekly_scan_cron: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RetryConfig {
+    pub max_attempts: u32,
+    pub backoff_ms: u64,
 }
 
 impl AppConfig {

@@ -25,29 +25,6 @@ pub struct XdxrEventRow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
-pub struct AdjFactorRow {
-    pub market: i32,
-    pub symbol: String,
-    pub trade_date: String,
-    pub adj_factor: f64,
-    pub data_source: String,
-    pub confidence: String,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
-pub struct FactorValidationRow {
-    pub market: i32,
-    pub symbol: String,
-    pub trade_date: String,
-    pub tushare_value: Option<f64>,
-    pub local_value: Option<f64>,
-    pub diff_pct: Option<f64>,
-    pub status: String,
-    pub checked_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct SyncMetaRow {
     pub key: String,
     pub value: String,
@@ -86,6 +63,16 @@ pub struct ScanResultRow {
     pub result_json: Option<String>,
     pub created_at: String,
     pub finished_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct DownloadCheckpointRow {
+    pub change_name: String,
+    pub market: String,
+    pub last_symbol: String,
+    pub progress: i32,
+    pub total: i32,
+    pub updated_at: String,
 }
 
 pub fn now_iso() -> String {
