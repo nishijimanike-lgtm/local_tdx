@@ -1,8 +1,6 @@
 <script setup lang="ts">
-import { inject, type Ref } from 'vue'
-import type { DashboardStats, ParquetStats } from '../types'
-const dashboard = inject<Ref<DashboardStats>>('dashboard')!
-const parquetStats = inject<Ref<ParquetStats>>('parquetStats')!
+import { useDashboardStore } from '../../stores/dashboard'
+const { data: dashboard, parquet: parquetStats } = useDashboardStore()
 </script>
 <template>
   <div class="space-y-8">

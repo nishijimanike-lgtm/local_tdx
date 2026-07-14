@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { inject, ref, onMounted, computed, type Ref } from 'vue'
-import type { CalendarDay } from '../types'
+import type { CalendarDay } from '../../types'
 const list = inject<Ref<CalendarDay[]>>('calendarList')!
 const fetchCalendar = inject<(start: string, end: string) => Promise<void>>('fetchCalendar')!
 

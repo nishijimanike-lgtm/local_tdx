@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Toast } from '../types'
+import type { Toast } from '../../types'
 defineProps<{ toasts: Toast[] }>()
 </script>
 <template>

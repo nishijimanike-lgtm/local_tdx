@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { inject, ref, watch, onUnmounted, type Ref } from 'vue'
-import type { TaskProgress, TaskLog } from '../types'
+import type { TaskProgress, TaskLog } from '../../types'
 
 const p = inject<Ref<TaskProgress>>('activeTaskProgress')!
 const taskList = inject<Ref<TaskLog[]>>('taskList')!

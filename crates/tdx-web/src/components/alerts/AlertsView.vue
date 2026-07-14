@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { inject, type Ref } from 'vue'
-import type { Alert } from '../types'
+import type { Alert } from '../../types'
 const alerts = inject<Ref<Alert[]>>('alertsList')!
 const acknowledge = inject<(id: number) => Promise<void>>('acknowledgeAlert')!
 </script>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { inject, type Ref } from 'vue'
-import type { ServerSettings } from '../types'
+import type { ServerSettings } from '../../types'
 const settings = inject<Ref<ServerSettings>>('settings')!
 const saveSettings = inject<() => Promise<void>>('saveSettings')!
 </script>

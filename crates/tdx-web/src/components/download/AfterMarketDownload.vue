@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { inject, ref, computed, watch, onUnmounted, type Ref } from 'vue'
-import type { TaskProgress } from '../types'
+import type { TaskProgress } from '../../types'
 
 const p = inject<TaskProgress>('activeTaskProgress')!
 const triggerTask = inject<(a: string) => Promise<void>>('triggerTask')!
