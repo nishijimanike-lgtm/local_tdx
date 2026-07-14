@@ -12,6 +12,7 @@ use tokio_cron_scheduler::{Job, JobScheduler};
 use tokio_stream::StreamExt as _;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
+use tower_http::services::ServeDir;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -128,6 +129,7 @@ async fn main() -> anyhow::Result<()> {
     // Build Axum router
     let app = Router::new()
         .route("/", get(serve_dashboard))
+        .nest_service("/assets", ServeDir::new("crates/tdx-web/dist/assets"))
         .route("/api/health", get(health_check))
         .route("/api/dashboard", get(get_dashboard))
         .route("/api/parquet/stats", get(get_parquet_stats))

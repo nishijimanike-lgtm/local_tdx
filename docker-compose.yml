@@ -1,0 +1,26 @@
+services:
+  tdx-maintain:
+    build: .
+    container_name: tdx-maintain
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - RUST_LOG=info
+    volumes:
+      # Mount local TDX data directory (read-only for safety)
+      - D:/new_tdx64:/data/tdx:ro
+      # Persistent data directories
+      - tdx_data:/data/tdx_maintain/data
+      - tdx_backup:/data/tdx_maintain/backup
+      - tdx_parquet:/data/tdx_maintain/parquet
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  tdx_data:
+  tdx_backup:
+  tdx_parquet:

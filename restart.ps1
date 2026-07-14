@@ -1,4 +1,4 @@
-# 通达信数据维护系统 - 构建并重启脚本
+﻿# 通达信数据维护系统 - 构建并重启脚本
 # Usage: .\restart.ps1          (debug 模式)
 #        .\restart.ps1 -Release (release 模式)
 

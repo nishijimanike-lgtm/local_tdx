@@ -410,3 +410,103 @@ impl<'a> ScanRepo<'a> {
         .await?)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::SqlitePool;
+
+    async fn setup() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let schema = "
+            CREATE TABLE IF NOT EXISTS sync_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS task_log (id INTEGER PRIMARY KEY AUTOINCREMENT, task_type TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, status TEXT NOT NULL, done_count INTEGER DEFAULT 0, skipped_count INTEGER DEFAULT 0, failed_count INTEGER DEFAULT 0, detail TEXT);
+            CREATE TABLE IF NOT EXISTS trade_calendar (exchange TEXT NOT NULL, trade_date TEXT NOT NULL, is_open INTEGER NOT NULL, source TEXT NOT NULL DEFAULT 'tushare', updated_at TEXT NOT NULL, PRIMARY KEY (exchange, trade_date));
+            CREATE TABLE IF NOT EXISTS xdxr_events (market INTEGER NOT NULL, symbol TEXT NOT NULL, ex_date TEXT NOT NULL, category INTEGER NOT NULL, fenhong REAL DEFAULT 0, peigu REAL DEFAULT 0, peigujia REAL DEFAULT 0, songzhuangu REAL DEFAULT 0, source TEXT NOT NULL DEFAULT 'tdxrs', updated_at TEXT NOT NULL, PRIMARY KEY (market, symbol, ex_date, category));
+            CREATE TABLE IF NOT EXISTS download_checkpoint (change_name TEXT NOT NULL, market TEXT NOT NULL, last_symbol TEXT NOT NULL, progress INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, PRIMARY KEY (change_name, market));
+        ";
+        sqlx::query(schema).execute(&pool).await.unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn test_sync_meta_set_and_get() {
+        let pool = setup().await;
+        let repo = SyncMetaRepo::new(&pool);
+        repo.set("foo", "bar").await.unwrap();
+        assert_eq!(repo.get("foo").await.unwrap(), Some("bar".to_string()));
+        assert_eq!(repo.get("nonexistent").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn test_sync_meta_overwrite() {
+        let pool = setup().await;
+        let repo = SyncMetaRepo::new(&pool);
+        repo.set("key", "v1").await.unwrap();
+        repo.set("key", "v2").await.unwrap();
+        assert_eq!(repo.get("key").await.unwrap(), Some("v2".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_task_log_create_and_finish() {
+        let pool = setup().await;
+        let repo = TaskLogRepo::new(&pool);
+        let id = repo.create("daily_bar_update").await.unwrap();
+        assert!(id > 0);
+        repo.finish(id, "success", 10, 2, 1, Some("detail")).await.unwrap();
+        let list = repo.list_recent(10).await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].status, "success");
+        assert_eq!(list[0].done_count, 10);
+    }
+
+    #[tokio::test]
+    async fn test_calendar_upsert_and_query() {
+        let pool = setup().await;
+        let repo = CalendarRepo::new(&pool);
+        let rows = vec![
+            TradeCalendarRow { exchange: "SSE".into(), trade_date: "2024-01-02".into(), is_open: 1, source: "test".into(), updated_at: "now".into() },
+            TradeCalendarRow { exchange: "SSE".into(), trade_date: "2024-01-03".into(), is_open: 1, source: "test".into(), updated_at: "now".into() },
+            TradeCalendarRow { exchange: "SSE".into(), trade_date: "2024-01-06".into(), is_open: 0, source: "test".into(), updated_at: "now".into() },
+        ];
+        repo.upsert_batch(&rows).await.unwrap();
+        let days = repo.get_trading_days("SSE", "2024-01-01", "2024-12-31").await.unwrap();
+        assert_eq!(days.len(), 2);
+        assert_eq!(days[0], "2024-01-02");
+        let latest = repo.latest_trading_day("SSE").await.unwrap();
+        assert_eq!(latest, Some("2024-01-03".to_string()));
+        assert!(repo.is_trading_day("SSE", "2024-01-02").await.unwrap());
+        assert!(!repo.is_trading_day("SSE", "2024-01-06").await.unwrap());
+        assert_eq!(repo.count_open_days("SSE").await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_xdxr_upsert_and_count() {
+        let pool = setup().await;
+        let repo = XdxrRepo::new(&pool);
+        let row = XdxrEventRow {
+            market: 1, symbol: "600000".into(), ex_date: "2024-06-15".into(),
+            category: 1, fenhong: 0.5, peigu: 0.0, peigujia: 0.0,
+            songzhuangu: 0.0, source: "local".into(), updated_at: "now".into(),
+        };
+        repo.upsert(&row).await.unwrap();
+        assert_eq!(repo.count().await.unwrap(), 1);
+        let list = repo.list_for_symbol(1, "600000").await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].fenhong, 0.5);
+    }
+
+    #[tokio::test]
+    async fn test_download_checkpoint_save_load_clear() {
+        let pool = setup().await;
+        let repo = DownloadCheckpointRepo::new(&pool);
+        repo.save("daily-full", "sh", "600000", 50, 200).await.unwrap();
+        let cp = repo.load("daily-full", "sh").await.unwrap().unwrap();
+        assert_eq!(cp.last_symbol, "600000");
+        repo.save("daily-full", "sh", "600100", 100, 200).await.unwrap();
+        let cp2 = repo.load("daily-full", "sh").await.unwrap().unwrap();
+        assert_eq!(cp2.progress, 100);
+        repo.clear("daily-full").await.unwrap();
+        assert!(repo.load("daily-full", "sh").await.unwrap().is_none());
+    }
+}

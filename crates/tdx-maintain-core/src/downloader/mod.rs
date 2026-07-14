@@ -1,7 +1,7 @@
 use crate::config::AppConfig;
 
 use crate::tdx::{list_day_symbols, Market, DailyBar, DailyBarWriter};
-use crate::db::repos::XdxrRepo;
+use crate::db::repos::{XdxrRepo, DownloadCheckpointRepo};
 use chrono::{Datelike, Timelike, NaiveDate};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -11,8 +11,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use tracing::{info, warn};
 use rustdx::tcp::Tdx;
 
-// Control states: 0=normal, 1=paused, 2=aborted
-const CTRL_NORMAL: u8 = 0;
+// Control states: 1=paused, 2=aborted (0=normal is implicit default)
 const CTRL_PAUSED: u8 = 1;
 const CTRL_ABORTED: u8 = 2;
 
@@ -57,6 +56,7 @@ impl DownloaderService {
             .join(filename)
     }
 
+    #[allow(dead_code)]
     fn backup_path(&self, market: Market, symbol: &str) -> PathBuf {
         let date = chrono::Utc::now().format("%Y%m%d").to_string();
         let backup: PathBuf = self.config.paths.backup_dir.clone().into();
@@ -74,6 +74,7 @@ impl DownloaderService {
             .join(filename)
     }
 
+    #[allow(dead_code)]
     async fn backup_file_async(&self, src: &PathBuf, market: Market, symbol: &str) -> anyhow::Result<()> {
         if !src.exists() {
             return Ok(());
@@ -193,82 +194,110 @@ impl DownloaderService {
         }
 
         let total = all_stocks.len() as i32;
-        on_progress(0, 0, 0, total, &format!("共 {} 只股票待处理", total));
+        let change_name = "daily-update";
+        let checkpoint_repo = DownloadCheckpointRepo::new(&self.pool);
 
-        // Download loop
-        let mut stats = DownloadStats {
-            done: 0,
-            skipped: 0,
-            failed: 0,
-            total,
-            failures: Vec::new(),
+        // Check for existing checkpoint (resume after restart)
+        let start_idx = if let Ok(Some(cp)) = checkpoint_repo.load(change_name, "all").await {
+            let resume_idx = all_stocks.iter().position(|(_, s)| s == &cp.last_symbol).unwrap_or(0);
+            let msg = format!("检测到断点，从 {} 恢复 (进度 {}/{})", cp.last_symbol, cp.progress, total);
+            info!("{}", msg);
+            on_progress(cp.progress, 0, 0, total, &msg);
+            resume_idx + 1
+        } else {
+            0
         };
 
-        
+        on_progress(start_idx as i32, 0, 0, total, &format!("共 {} 只股票待处理", total));
 
-        for (i, (market, symbol)) in all_stocks.iter().enumerate() {
-            // Check control state
+        let mut stats = DownloadStats { done: start_idx as i32, skipped: 0, failed: 0, total, failures: Vec::new() };
+        let mut failed_stocks: Vec<(Market, String)> = Vec::new();
+
+        for i in start_idx..all_stocks.len() {
+            let (market, symbol) = &all_stocks[i];
+
             let ctrl = control.load(Ordering::Relaxed);
             if ctrl == CTRL_ABORTED {
-                break;
+                if i > 0 { let _ = checkpoint_repo.save(change_name, "all", &all_stocks[i-1].1, i as i32, total).await; }
+                anyhow::bail!("任务已被用户中止 (断点已保存)");
             }
-            while ctrl == CTRL_PAUSED {
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            }
+            while ctrl == CTRL_PAUSED { tokio::time::sleep(std::time::Duration::from_millis(200)).await; }
 
             let mkt = market_to_rustdx(*market);
-
-            // Sleep for rate limiting
             tokio::time::sleep(delay_per_req).await;
 
             match self.download_one_stock(mkt, symbol).await {
                 Ok(bars) => {
                     let path = self.day_path(*market, symbol);
-                    if let Some(parent) = path.parent() {
-                        let _ = std::fs::create_dir_all(parent);
-                    }
-                    // Write .day file (blocking I/O offloaded)
+                    if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
                     let path_clone = path.clone();
                     let bars_clone = bars.clone();
                     let write_ok = tokio::task::spawn_blocking(move || {
-                        let writer = DailyBarWriter::default(); writer.write_file(&path_clone, &bars_clone)
-                    })
-                    .await
-                    .map_err(|e| anyhow::anyhow!("spawn_blocking failed: {e}"))?;
+                        DailyBarWriter::default().write_file(&path_clone, &bars_clone)
+                    }).await.map_err(|e| anyhow::anyhow!("spawn_blocking failed: {e}"))?;
 
                     match write_ok {
                         Ok(()) => stats.done += 1,
                         Err(e) => {
                             stats.failed += 1;
                             stats.failures.push(format!("{}#{}: 写入失败 {}", market.dir_name(), symbol, e));
+                            failed_stocks.push((*market, symbol.clone()));
                         }
                     }
                 }
                 Err(e) => {
                     stats.failed += 1;
                     stats.failures.push(format!("{}#{}: {}", market.dir_name(), symbol, e));
+                    failed_stocks.push((*market, symbol.clone()));
                 }
             }
 
             if i % 50 == 0 {
-                let msg = format!(
-                    "正在拉取更新... 已同步: {}, 跳过: {}, 失败: {}",
-                    stats.done, stats.skipped, stats.failed
-                );
-                on_progress(stats.done, stats.skipped, stats.failed, total, &msg);
+                let _ = checkpoint_repo.save(change_name, "all", symbol, i as i32, total).await;
+                on_progress(stats.done, stats.skipped, stats.failed, total,
+                    &format!("正在拉取更新... 已同步: {}, 跳过: {}, 失败: {}", stats.done, stats.skipped, stats.failed));
             }
         }
 
-        // Auto-retry failed stocks (configurable)
+        // Clear checkpoint on normal completion
+        let _ = checkpoint_repo.clear(change_name).await;
+
+        // Auto-retry failed stocks
         let max_attempts = self.config.retry.max_attempts.max(1);
-        let _backoff = std::time::Duration::from_millis(self.config.retry.backoff_ms);
+        let backoff = std::time::Duration::from_millis(self.config.retry.backoff_ms);
 
-        if !stats.failures.is_empty() && max_attempts > 1 {
-            on_progress(stats.done, stats.skipped, stats.failed, total,
-                &format!("重试 {} 个失败的股票 (第 2/{} 轮)...", stats.failures.len(), max_attempts));
+        if !failed_stocks.is_empty() && max_attempts > 1 {
+            let mut retry_list = failed_stocks.clone();
+            for attempt in 2..=max_attempts {
+                let mut next_retry: Vec<(Market, String)> = Vec::new();
+                on_progress(stats.done, stats.skipped, stats.failed, total,
+                    &format!("重试 {} 个失败的股票 (第 {}/{} 轮)...", retry_list.len(), attempt, max_attempts));
 
-            // TODO: Collect failed stocks and retry
-            // For now, just report and continue
+                for (market, symbol) in &retry_list {
+                    if control.load(Ordering::Relaxed) == CTRL_ABORTED { break; }
+                    tokio::time::sleep(backoff).await;
+                    let mkt = market_to_rustdx(*market);
+                    match self.download_one_stock(mkt, symbol).await {
+                        Ok(bars) => {
+                            let path = self.day_path(*market, symbol);
+                            if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
+                            let path_clone = path.clone();
+                            let bars_clone = bars.clone();
+                            if tokio::task::spawn_blocking(move || DailyBarWriter::default().write_file(&path_clone, &bars_clone))
+                                .await.is_ok()
+                            {
+                                stats.done += 1;
+                                stats.failed -= 1;
+                                stats.failures.retain(|f| !f.contains(&symbol[..]));
+
+                            } else { next_retry.push((*market, symbol.clone())); }
+                        }
+                        Err(_) => { next_retry.push((*market, symbol.clone())); }
+                    }
+                }
+                if next_retry.is_empty() { break; }
+                retry_list = next_retry;
+            }
         }
 
         on_progress(stats.done, stats.skipped, stats.failed, total, "数据增量同步完成");

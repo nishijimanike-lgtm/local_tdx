@@ -289,3 +289,72 @@ pub fn read_parquet_file(path: &std::path::Path) -> anyhow::Result<Vec<AdjFactor
 
     Ok(rows)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn make_row(market: i32, symbol: &str, date: &str, factor: f64) -> AdjFactorRow {
+        AdjFactorRow {
+            market,
+            symbol: symbol.to_string(),
+            trade_date: date.to_string(),
+            adj_factor: factor,
+            data_source: "test".to_string(),
+            confidence: "high".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_parquet_write_read_roundtrip() {
+        let dir = std::env::temp_dir().join("tdx_test_pq");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sh").join("000001.parquet");
+
+        let rows = vec![
+            make_row(1, "000001", "2024-01-02", 1.0),
+            make_row(1, "000001", "2024-01-03", 1.05),
+            make_row(1, "000001", "2024-01-04", 0.98),
+        ];
+
+        write_parquet_file(&path, &rows).unwrap();
+        let read_back = read_parquet_file(&path).unwrap();
+
+        assert_eq!(read_back.len(), 3);
+        assert_eq!(read_back[0].symbol, "000001");
+        assert!((read_back[1].adj_factor - 1.05).abs() < 0.001);
+        assert_eq!(read_back[2].trade_date, "2024-01-04");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_parquet_read_nonexistent_file() {
+        let result = read_parquet_file(std::path::Path::new("/nonexistent/file.parquet"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parquet_empty_write() {
+        let dir = std::env::temp_dir().join("tdx_test_pq_empty");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("empty.parquet");
+
+        write_parquet_file(&path, &[]).unwrap();
+        let read_back = read_parquet_file(&path).unwrap();
+        assert_eq!(read_back.len(), 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_adj_factor_row_serde() {
+        let row = make_row(1, "600000", "2024-06-15", 1.5);
+        let json = serde_json::to_string(&row).unwrap();
+        let deser: AdjFactorRow = serde_json::from_str(&json).unwrap();
+        assert_eq!(deser.market, 1);
+        assert!((deser.adj_factor - 1.5).abs() < 0.001);
+    }
+}

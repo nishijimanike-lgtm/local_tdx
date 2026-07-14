@@ -1,0 +1,10 @@
+target/
+node_modules/
+dist/
+.git/
+.reasonix/
+*.md
+*.bat
+*.ps1
+lib/
+.env

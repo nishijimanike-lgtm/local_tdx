@@ -181,3 +181,155 @@ impl DailyBarWriter {
         .map_err(|e| anyhow::anyhow!("spawn_blocking cancelled: {e}"))?
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn make_bar(year: i32, month: u32, day: u32, close: f64) -> DailyBar {
+        DailyBar {
+            date: NaiveDate::from_ymd_opt(year, month, day).unwrap(),
+            open: close - 0.5,
+            high: close + 0.3,
+            low: close - 0.8,
+            close,
+            amount: 1_000_000.0,
+            volume: 50000,
+        }
+    }
+
+    #[test]
+    fn test_write_read_roundtrip() {
+        let writer = DailyBarWriter::default();
+        let reader = DailyBarReader::default();
+        let dir = std::env::temp_dir().join("tdx_test_roundtrip");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("sh000001.day");
+
+        let bars = vec![
+            make_bar(2024, 1, 2, 10.5),
+            make_bar(2024, 1, 3, 11.0),
+            make_bar(2024, 1, 4, 10.8),
+        ];
+        writer.write_file(&path, &bars).unwrap();
+        let read_back = reader.read_file(&path).unwrap();
+
+        assert_eq!(read_back.len(), 3);
+        assert_eq!(read_back[0].date, bars[0].date);
+        assert!((read_back[0].close - bars[0].close).abs() < 0.001);
+        assert_eq!(read_back[2].volume, bars[2].volume);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_write_read_empty() {
+        let writer = DailyBarWriter::default();
+        let reader = DailyBarReader::default();
+        let dir = std::env::temp_dir().join("tdx_test_empty");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("sh000001.day");
+
+        writer.write_file(&path, &[]).unwrap();
+        let read_back = reader.read_file(&path).unwrap();
+        assert_eq!(read_back.len(), 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_read_invalid_size() {
+        let reader = DailyBarReader::default();
+        let dir = std::env::temp_dir().join("tdx_test_invalid");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("bad.day");
+
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(&[0u8; 31]).unwrap(); // not divisible by 32
+
+        let result = reader.read_file(&path);
+        assert!(result.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_reader_sorts_by_date() {
+        let writer = DailyBarWriter::default();
+        let reader = DailyBarReader::default();
+        let dir = std::env::temp_dir().join("tdx_test_sort");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("sh000001.day");
+
+        // Write in reverse order
+        let bars = vec![
+            make_bar(2024, 1, 5, 12.0),
+            make_bar(2024, 1, 2, 10.0),
+            make_bar(2024, 1, 3, 11.0),
+        ];
+        writer.write_file(&path, &bars).unwrap();
+        let read_back = reader.read_file(&path).unwrap();
+
+        assert_eq!(read_back.len(), 3);
+        assert!(read_back[0].date < read_back[1].date);
+        assert!(read_back[1].date < read_back[2].date);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_append_file_no_duplicates() {
+        let writer = DailyBarWriter::default();
+        let reader = DailyBarReader::default();
+        let dir = std::env::temp_dir().join("tdx_test_append");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("sh000001.day");
+
+        let initial = vec![make_bar(2024, 1, 2, 10.0)];
+        writer.write_file(&path, &initial).unwrap();
+
+        let update = vec![
+            make_bar(2024, 1, 2, 99.0), // same date, should not duplicate
+            make_bar(2024, 1, 3, 11.0),
+        ];
+        writer.append_file(&path, &update).unwrap();
+
+        let result = reader.read_file(&path).unwrap();
+        assert_eq!(result.len(), 2, "should have 2 unique dates");
+        assert!((result[0].close - 10.0).abs() < 0.001, "existing bar should not be overwritten");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_last_date() {
+        let writer = DailyBarWriter::default();
+        let reader = DailyBarReader::default();
+        let dir = std::env::temp_dir().join("tdx_test_last");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("sh000001.day");
+
+        let bars = vec![
+            make_bar(2024, 1, 2, 10.0),
+            make_bar(2024, 6, 15, 15.0),
+        ];
+        writer.write_file(&path, &bars).unwrap();
+
+        let last = reader.last_date(&path).unwrap();
+        assert_eq!(last, Some(NaiveDate::from_ymd_opt(2024, 6, 15).unwrap()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_write_file_creates_parent_dir() {
+        let writer = DailyBarWriter::default();
+        let reader = DailyBarReader::default();
+        let dir = std::env::temp_dir().join("tdx_test_parent");
+        let path = dir.join("sub").join("deep").join("sh000001.day");
+
+        let bars = vec![make_bar(2024, 1, 2, 10.0)];
+        writer.write_file(&path, &bars).unwrap();
+        assert!(path.exists());
+        let result = reader.read_file(&path).unwrap();
+        assert_eq!(result.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

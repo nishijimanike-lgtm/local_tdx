@@ -84,3 +84,80 @@ pub fn list_day_symbols(tdx_data_dir: &std::path::Path) -> anyhow::Result<Vec<(M
     }
     Ok(symbols)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_market_dir_names() {
+        assert_eq!(Market::Sh.dir_name(), "sh");
+        assert_eq!(Market::Sz.dir_name(), "sz");
+        assert_eq!(Market::Bj.dir_name(), "bj");
+    }
+
+    #[test]
+    fn test_from_dir_valid() {
+        assert_eq!(Market::from_dir("sh"), Some(Market::Sh));
+        assert_eq!(Market::from_dir("SZ"), Some(Market::Sz));
+        assert_eq!(Market::from_dir("Bj"), Some(Market::Bj));
+    }
+
+    #[test]
+    fn test_from_dir_invalid() {
+        assert_eq!(Market::from_dir("hk"), None);
+        assert_eq!(Market::from_dir(""), None);
+        assert_eq!(Market::from_dir("shanghai"), None);
+    }
+
+    #[test]
+    fn test_parse_day_filename_standard() {
+        let result = parse_day_filename("sh600000.day");
+        assert!(result.is_some());
+        let (market, code) = result.unwrap();
+        assert_eq!(market, Market::Sh);
+        assert_eq!(code, "600000");
+    }
+
+    #[test]
+    fn test_parse_day_filename_hash() {
+        let result = parse_day_filename("sz#000001.day");
+        assert!(result.is_some());
+        let (market, code) = result.unwrap();
+        assert_eq!(market, Market::Sz);
+        assert_eq!(code, "000001");
+    }
+
+    #[test]
+    fn test_parse_day_filename_invalid() {
+        assert_eq!(parse_day_filename("invalid"), None);
+        assert_eq!(parse_day_filename("xx123456.day"), None);
+        assert_eq!(parse_day_filename("sh12"), None); // too short
+    }
+
+    #[test]
+    fn test_get_day_filename_standard_exists() {
+        let dir = std::env::temp_dir().join("tdx_test_gdf");
+        let lday = dir.join("sh").join("lday");
+        std::fs::create_dir_all(&lday).unwrap();
+        std::fs::File::create(lday.join("sh000001.day")).unwrap();
+
+        let name = get_day_filename(Market::Sh, "000001", &dir);
+        assert_eq!(name, "sh000001.day");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_get_day_filename_hash_fallback() {
+        let dir = std::env::temp_dir().join("tdx_test_gdf2");
+        let lday = dir.join("sh").join("lday");
+        std::fs::create_dir_all(&lday).unwrap();
+        std::fs::File::create(lday.join("sh#000001.day")).unwrap();
+
+        let name = get_day_filename(Market::Sh, "000001", &dir);
+        assert_eq!(name, "sh#000001.day");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
