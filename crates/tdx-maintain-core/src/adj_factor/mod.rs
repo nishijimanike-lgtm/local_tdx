@@ -112,17 +112,74 @@ impl AdjFactorService {
                     continue;
                 }
             };
+            // Fetch all XDXR events for this symbol
+            let xdxr_repo = crate::db::repos::XdxrRepo::new(&self.pool);
+            let mut xdxr_events = xdxr_repo.list_for_symbol(market_i, symbol).await.unwrap_or_default();
+            xdxr_events.sort_by(|a, b| a.ex_date.cmp(&b.ex_date));
 
-            // Build all factor rows for this symbol (factor = 1.0, no XDXR events in L3)
-            let rows: Vec<AdjFactorRow> = bars.iter().map(|bar| AdjFactorRow {
-                market: market_i,
-                symbol: symbol.clone(),
-                trade_date: bar.date.format("%Y-%m-%d").to_string(),
-                adj_factor: 1.0,
-                data_source: "local_xdxr".to_string(),
-                confidence: "normal".to_string(),
-                updated_at: now.clone(),
-            }).collect();
+            let mut rows = Vec::new();
+            if !bars.is_empty() {
+                let mut cumulative_factor = 1.0;
+                
+                rows.push(AdjFactorRow {
+                    market: market_i,
+                    symbol: symbol.clone(),
+                    trade_date: bars[0].date.format("%Y-%m-%d").to_string(),
+                    adj_factor: cumulative_factor,
+                    data_source: "local_xdxr".to_string(),
+                    confidence: "normal".to_string(),
+                    updated_at: now.clone(),
+                });
+
+                for t in 1..bars.len() {
+                    let prev_bar = &bars[t - 1];
+                    let curr_bar = &bars[t];
+                    let prev_date_str = prev_bar.date.format("%Y-%m-%d").to_string();
+                    let curr_date_str = curr_bar.date.format("%Y-%m-%d").to_string();
+
+                    // Find events falling in (prev_date, curr_date]
+                    let active_events: Vec<&crate::db::models::XdxrEventRow> = xdxr_events
+                        .iter()
+                        .filter(|e| e.ex_date > prev_date_str && e.ex_date <= curr_date_str)
+                        .collect();
+
+                    if !active_events.is_empty() {
+                        let mut d = 0.0;
+                        let mut r_bonus = 0.0;
+                        let mut r_placement = 0.0;
+                        let mut p_placement = 0.0;
+
+                        for e in active_events {
+                            d += e.fenhong;
+                            r_bonus += e.songzhuangu;
+                            r_placement += e.peigu;
+                            if e.peigujia > 0.0 {
+                                p_placement = e.peigujia;
+                            }
+                        }
+
+                        let p_prev = prev_bar.close;
+                        if p_prev > 0.0 {
+                            let numerator = p_prev - d + p_placement * r_placement;
+                            let denominator = p_prev * (1.0 + r_bonus + r_placement);
+                            let r_t = numerator / denominator;
+                            if r_t > 0.0 && r_t.is_finite() {
+                                cumulative_factor /= r_t;
+                            }
+                        }
+                    }
+
+                    rows.push(AdjFactorRow {
+                        market: market_i,
+                        symbol: symbol.clone(),
+                        trade_date: curr_date_str,
+                        adj_factor: cumulative_factor,
+                        data_source: "local_xdxr".to_string(),
+                        confidence: "normal".to_string(),
+                        updated_at: now.clone(),
+                    });
+                }
+            }
 
             // Spawn Parquet write as a background blocking task directly
             let parquet_base = std::path::Path::new(&self.config.paths.parquet_dir).to_path_buf();
