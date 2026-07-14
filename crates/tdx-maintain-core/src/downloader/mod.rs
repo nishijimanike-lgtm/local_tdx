@@ -1,6 +1,6 @@
 use crate::config::AppConfig;
 
-use crate::tdx::{list_day_symbols, Market, DailyBar, DailyBarWriter};
+use crate::tdx::{list_day_symbols, Market, DailyBar, DailyBarReader, DailyBarWriter};
 use crate::db::repos::{XdxrRepo, DownloadCheckpointRepo};
 use chrono::{Datelike, Timelike, NaiveDate};
 use serde::{Deserialize, Serialize};
@@ -393,6 +393,84 @@ impl DownloaderService {
 
         on_progress(count, 0, 0, count, "XDXR 完成");
         Ok(DownloadStats { done: count, skipped: 0, failed: 0, total: count, failures: Vec::new() })
+    }
+
+    /// Import local TDX .day files — scan, validate, and report statistics.
+    /// No network access; pure local file I/O.
+    pub async fn run_local_import<F>(&self, mut on_progress: F) -> anyhow::Result<DownloadStats>
+    where
+        F: FnMut(i32, i32, i32, i32, &str),
+    {
+        on_progress(0, 0, 0, 100, "扫描本地 TDX 数据目录...");
+
+        let tdx_dir = self.config.paths.tdx_data_dir.clone();
+        let symbols = list_day_symbols(std::path::Path::new(&tdx_dir))?;
+        let total = symbols.len() as i32;
+
+        on_progress(0, 0, 0, total, &format!("发现 {} 个本地 .day 文件，开始校验...", total));
+
+        let tdx_dir_clone = tdx_dir.clone();
+        let stats = tokio::task::spawn_blocking(move || -> anyhow::Result<DownloadStats> {
+            let reader = DailyBarReader::default();
+            let mut done = 0i32;
+            let mut skipped = 0i32;
+            let mut failed = 0i32;
+            let mut failures = Vec::new();
+            let mut total_bars: i64 = 0;
+            let mut first_date: Option<String> = None;
+            let mut last_date: Option<String> = None;
+
+            for (idx, (market, symbol)) in symbols.iter().enumerate() {
+                let filename = crate::tdx::get_day_filename(*market, symbol,
+                    &std::path::Path::new(&tdx_dir_clone));
+                let base_dir = if tdx_dir_clone.ends_with("vipdoc") {
+                    std::path::PathBuf::from(&tdx_dir_clone)
+                } else {
+                    std::path::PathBuf::from(&tdx_dir_clone).join("vipdoc")
+                };
+                let path = base_dir.join(market.dir_name()).join("lday").join(&filename);
+
+                if !path.exists() {
+                    skipped += 1;
+                    continue;
+                }
+
+                match reader.read_file(&path) {
+                    Ok(bars) => {
+                        if bars.is_empty() {
+                            skipped += 1;
+                            continue;
+                        }
+                        total_bars += bars.len() as i64;
+                        if let Some(d) = bars.first().map(|b| b.date.format("%Y-%m-%d").to_string()) {
+                            if first_date.as_ref().map_or(true, |fd| d < *fd) { first_date = Some(d); }
+                        }
+                        if let Some(d) = bars.last().map(|b| b.date.format("%Y-%m-%d").to_string()) {
+                            if last_date.as_ref().map_or(true, |ld| d > *ld) { last_date = Some(d); }
+                        }
+                        done += 1;
+                    }
+                    Err(e) => {
+                        failed += 1;
+                        failures.push(format!("{}#{}: {}", market.dir_name(), symbol, e));
+                    }
+                }
+
+                if idx % 200 == 0 {
+                    // Progress reported via stats; caller polls
+                }
+            }
+
+            Ok(DownloadStats {
+                done, skipped, failed, total, failures,
+            })
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("本地导入失败: {e}"))??;
+
+        on_progress(stats.done, stats.skipped, stats.failed, total,
+            &format!("本地数据校验完成: {} 有效, {} 跳过, {} 失败", stats.done, stats.skipped, stats.failed));
+        Ok(stats)
     }
 }
 

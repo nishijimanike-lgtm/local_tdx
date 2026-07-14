@@ -17,6 +17,8 @@ const downloadAdjFactor = ref(false)
 const downloadCalendar = ref(false)
 const downloadScan = ref(false)
 
+const dataSource = ref<'remote' | 'local'>('remote')
+
 // Init dates to last 7 days
 const today = new Date()
 const weekAgo = new Date(today.getTime() - 7 * 86400000)
@@ -34,16 +36,25 @@ interface DownloadItem {
   checked: Ref<boolean>
 }
 
-const items: DownloadItem[] = [
-  { id: 'daily-increment', label: '日线 — 增量更新 (仅补齐缺失)', checked: downloadDailyIncr },
-  { id: 'daily-full', label: '日线 — 全量下载 (覆盖全部历史)', checked: downloadDailyFull },
-  { id: 'xdxr-sync', label: '除权除息事件 (XDXR)', checked: downloadXdxr },
-  { id: 'adj-factor-sync', label: '复权因子 (L3)', checked: downloadAdjFactor },
-  { id: 'calendar-sync', label: '交易日历', checked: downloadCalendar },
-  { id: 'daily_bars', label: '数据完整性扫描', checked: downloadScan },
-]
-
-const checkedCount = computed(() => items.filter(i => i.checked.value).length)
+const items = computed<DownloadItem[]>(() => {
+  if (dataSource.value === 'local') {
+    return [
+      { id: 'local-import', label: '本地日线数据校验与导入', checked: ref(true) },
+      { id: 'xdxr-sync', label: '除权除息事件 (XDXR)', checked: downloadXdxr },
+      { id: 'calendar-sync', label: '交易日历', checked: downloadCalendar },
+      { id: 'daily_bars', label: '数据完整性扫描', checked: downloadScan },
+    ]
+  }
+  return [
+    { id: 'daily-increment', label: '日线 — 增量更新 (仅补齐缺失)', checked: downloadDailyIncr },
+    { id: 'daily-full', label: '日线 — 全量下载 (覆盖全部历史)', checked: downloadDailyFull },
+    { id: 'xdxr-sync', label: '除权除息事件 (XDXR)', checked: downloadXdxr },
+    { id: 'adj-factor-sync', label: '复权因子 (L3)', checked: downloadAdjFactor },
+    { id: 'calendar-sync', label: '交易日历', checked: downloadCalendar },
+    { id: 'daily_bars', label: '数据完整性扫描', checked: downloadScan },
+  ]
+})
+const checkedCount = computed(() => items.value.filter(i => i.checked.value).length)
 
 // Progress display
 const taskLabelMap: Record<string, string> = {
@@ -54,6 +65,7 @@ const taskLabelMap: Record<string, string> = {
   xdxr_sync: 'XDXR 同步',
   adj_factor_update: '复权因子重构',
   daily_bar_scan: '完整性扫描',
+  local_import: '本地数据导入',
 }
 
 function currentTaskLabel() {
@@ -91,7 +103,7 @@ watch(() => p.finished, (finished) => {
 })
 
 function startDownload() {
-  const selected = items.filter(i => i.checked.value).map(i => i.id)
+  const selected = items.value.filter(i => i.checked.value).map(i => i.id)
   if (selected.length === 0) {
     showToast('请至少选择一项数据', 'error')
     return
@@ -126,6 +138,20 @@ onUnmounted(() => { if (hideTimer) clearTimeout(hideTimer) })
         </svg>
         <span class="text-sm font-display font-semibold text-slate-200">盘后数据下载</span>
         <span v-if="isDownloading" class="text-xs px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 animate-pulse">下载中</span>
+      </div>
+
+      <!-- Data Source -->
+      <div class="px-6 py-3 border-b border-slate-800/30 flex items-center gap-4">
+        <span class="text-xs text-slate-500">数据源</span>
+        <label class="flex items-center gap-2 cursor-pointer"><input type="radio" v-model="dataSource" value="remote" class="text-indigo-500" /><span class="text-sm" :class="dataSource === 'remote' ? 'text-slate-200' : 'text-slate-500'">远程下载</span></label>
+        <label class="flex items-center gap-2 cursor-pointer"><input type="radio" v-model="dataSource" value="local" class="text-indigo-500" /><span class="text-sm" :class="dataSource === 'local' ? 'text-slate-200' : 'text-slate-500'">本地转换</span></label>
+      </div>
+
+      <!-- Data Source -->
+      <div class="px-6 py-3 border-b border-slate-800/30 flex items-center gap-4">
+        <span class="text-xs text-slate-500 w-12">数据源</span>
+        <label class="flex items-center gap-2 cursor-pointer"><input type="radio" v-model="dataSource" value="remote" class="text-indigo-500" /><span class="text-sm" :class="dataSource === 'remote' ? 'text-slate-200' : 'text-slate-500'">远程下载</span></label>
+        <label class="flex items-center gap-2 cursor-pointer"><input type="radio" v-model="dataSource" value="local" class="text-indigo-500" /><span class="text-sm" :class="dataSource === 'local' ? 'text-slate-200' : 'text-slate-500'">本地转换</span></label>
       </div>
 
       <!-- Date Range -->

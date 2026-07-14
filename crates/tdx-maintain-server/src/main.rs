@@ -537,6 +537,7 @@ async fn trigger_task(
         "xdxr-sync" => TaskKind::XdxrSync,
         "adj-factor-sync" => TaskKind::AdjFactorSync,
         "daily_bars" => TaskKind::DailyBarScan,
+        "local-import" => TaskKind::LocalImport,
         "xdxr" => TaskKind::XdxrScan,
         "adj_factors" => TaskKind::AdjFactorScan,
         _ => return Err((StatusCode::BAD_REQUEST, "Invalid action".to_string())),

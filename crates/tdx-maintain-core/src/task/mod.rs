@@ -36,6 +36,7 @@ pub enum TaskKind {
     DailyBarScan,
     XdxrScan,
     AdjFactorScan,
+    LocalImport,
 }
 
 impl TaskKind {
@@ -50,6 +51,7 @@ impl TaskKind {
             TaskKind::DailyBarScan => "daily_bar_scan",
             TaskKind::XdxrScan => "xdxr_scan",
             TaskKind::AdjFactorScan => "adj_factor_scan",
+            TaskKind::LocalImport => "local_import",
         }
     }
 }
@@ -406,6 +408,18 @@ async fn run_task(
             let detail = serde_json::to_string(&result)?;
             TaskLogRepo::new(&pool)
                 .finish(task_id, "success", 1, 0, 0, Some(&detail))
+                .await?;
+        }
+        TaskKind::LocalImport => {
+            let dl = DownloaderService::new(pool.clone(), config.clone());
+            let stats = dl.run_local_import(|done, skipped, failed, total, msg| {
+                emit(done, skipped, failed, total, msg, false);
+            }).await?;
+            let status = if stats.failed > 0 { "partial" } else { "success" };
+            emit(stats.done, stats.skipped, stats.failed, stats.total, "本地数据导入完成", true);
+            let detail = serde_json::to_string(&stats)?;
+            TaskLogRepo::new(&pool)
+                .finish(task_id, status, stats.done, stats.skipped, stats.failed, Some(&detail))
                 .await?;
         }
     };
