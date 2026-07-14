@@ -416,7 +416,6 @@ impl DownloaderService {
             let mut skipped = 0i32;
             let mut failed = 0i32;
             let mut failures = Vec::new();
-            let mut total_bars: i64 = 0;
             let mut first_date: Option<String> = None;
             let mut last_date: Option<String> = None;
 
@@ -441,7 +440,6 @@ impl DownloaderService {
                             skipped += 1;
                             continue;
                         }
-                        total_bars += bars.len() as i64;
                         if let Some(d) = bars.first().map(|b| b.date.format("%Y-%m-%d").to_string()) {
                             if first_date.as_ref().map_or(true, |fd| d < *fd) { first_date = Some(d); }
                         }

@@ -147,13 +147,6 @@ onUnmounted(() => { if (hideTimer) clearTimeout(hideTimer) })
         <label class="flex items-center gap-2 cursor-pointer"><input type="radio" v-model="dataSource" value="local" class="text-indigo-500" /><span class="text-sm" :class="dataSource === 'local' ? 'text-slate-200' : 'text-slate-500'">本地转换</span></label>
       </div>
 
-      <!-- Data Source -->
-      <div class="px-6 py-3 border-b border-slate-800/30 flex items-center gap-4">
-        <span class="text-xs text-slate-500 w-12">数据源</span>
-        <label class="flex items-center gap-2 cursor-pointer"><input type="radio" v-model="dataSource" value="remote" class="text-indigo-500" /><span class="text-sm" :class="dataSource === 'remote' ? 'text-slate-200' : 'text-slate-500'">远程下载</span></label>
-        <label class="flex items-center gap-2 cursor-pointer"><input type="radio" v-model="dataSource" value="local" class="text-indigo-500" /><span class="text-sm" :class="dataSource === 'local' ? 'text-slate-200' : 'text-slate-500'">本地转换</span></label>
-      </div>
-
       <!-- Date Range -->
       <div class="px-6 py-4 border-b border-slate-800/30 grid grid-cols-1 md:grid-cols-2 gap-4">
         <div>
