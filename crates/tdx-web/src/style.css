@@ -1,26 +1,63 @@
 @import "tailwindcss";
 
-/* Base */
-body { font-family: 'Inter', system-ui, sans-serif; }
+/* ── Design Tokens ── */
+:root {
+  --accent: #6366f1;          /* indigo-500 */
+  --accent-soft: #818cf8;     /* indigo-400 */
+  --accent-strong: #4f46e5;   /* indigo-600 */
 
-/* Vue v-cloak */
+  --success: #10b981;         /* emerald-500 */
+  --success-soft: #34d399;    /* emerald-400 */
+
+  --warn: #f59e0b;            /* amber-500 */
+  --warn-soft: #fbbf24;       /* amber-400 */
+
+  --danger: #f43f5e;           /* rose-500 */
+  --info: #06b6d4;             /* cyan-500 */
+  --info-soft: #22d3ee;        /* cyan-400 */
+
+  --fresh-ok: #10b981;
+  --fresh-stale: #f59e0b;
+  --fresh-expired: #f43f5e;
+
+  --surface: #0f172a;          /* slate-950 */
+  --surface-raised: rgba(30, 41, 59, 0.4);
+  --border: rgba(51, 65, 85, 0.5);
+  --border-hover: rgba(99, 102, 241, 0.3);
+}
+
+/* ── Base ── */
+body { font-family: 'Inter', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+
+/* Vue */
 [v-cloak] { display: none !important; }
 
-/* Scrollbar */
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: rgba(15, 23, 42, 0.6); }
-::-webkit-scrollbar-thumb { background: rgba(99, 102, 241, 0.2); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(99, 102, 241, 0.4); }
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(99, 102, 241, 0.15); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(99, 102, 241, 0.3); }
 
-/* Animation */
+/* ── Animations ── */
 @keyframes slide-up {
-  from { opacity: 0; transform: translateY(10px); }
+  from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
 }
-.animate-slide-up { animation: slide-up 0.3s ease-out; }
+.animate-slide-up { animation: slide-up 0.25s ease-out; }
 
-@keyframes pulse-slow {
-  0%, 100% { opacity: 0.6; }
-  50% { opacity: 0.3; }
+@keyframes live-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); }
+  50% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
 }
-.animate-pulse-slow { animation: pulse-slow 3s infinite; }
+.animate-live-pulse { animation: live-pulse 2s ease-in-out infinite; }
+
+@keyframes progress-stripe {
+  0% { background-position: 0 0; }
+  100% { background-position: 40px 0; }
+}
+
+/* ── Utility ── */
+.glass-panel {
+  background: var(--surface-raised);
+  backdrop-filter: blur(12px);
+}

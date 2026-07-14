@@ -129,14 +129,16 @@ onUnmounted(() => { if (hideTimer) clearTimeout(hideTimer) })
   <div class="space-y-6">
 
     <!-- Options Panel -->
-    <div class="bg-slate-900/40 border border-slate-800/50 rounded-xl overflow-hidden">
-      <!-- Tab-like header -->
+    <div class="glass-panel border border-slate-800/50 rounded-xl overflow-hidden">
+      <!-- Header -->
       <div class="px-6 py-4 border-b border-slate-800/50 flex items-center gap-3">
-        <svg class="w-5 h-5 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-        </svg>
-        <span class="text-sm font-display font-semibold text-slate-200">盘后数据下载</span>
-        <span v-if="isDownloading" class="text-xs px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 animate-pulse">下载中</span>
+        <div class="p-1.5 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-indigo-400">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+          </svg>
+        </div>
+        <span class="text-sm font-semibold text-slate-200">盘后数据下载</span>
+        <span v-if="isDownloading" class="text-xs px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">下载中</span>
       </div>
 
       <!-- Data Source -->
