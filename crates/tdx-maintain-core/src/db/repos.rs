@@ -233,6 +233,28 @@ impl<'a> CalendarRepo<'a> {
         Ok(row.map(|r| r.0))
     }
 
+    /// Latest trading day that is on or before `today` (YYYY-MM-DD).
+    ///
+    /// Used by the freshness checker to avoid TCP kline queries:
+    /// the trade_calendar (synced from Tushare or local index files)
+    /// already knows all trading days.
+    pub async fn latest_trading_day_on_or_before(
+        &self,
+        exchange: &str,
+        today: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT trade_date FROM trade_calendar
+             WHERE exchange = ? AND is_open = 1 AND trade_date <= ?
+             ORDER BY trade_date DESC LIMIT 1",
+        )
+        .bind(exchange)
+        .bind(today)
+        .fetch_optional(self.pool)
+        .await?;
+        Ok(row.map(|r| r.0))
+    }
+
     pub async fn is_trading_day(&self, exchange: &str, date: &str) -> anyhow::Result<bool> {
         let row: Option<(i32,)> = sqlx::query_as(
             "SELECT is_open FROM trade_calendar WHERE exchange = ? AND trade_date = ?",

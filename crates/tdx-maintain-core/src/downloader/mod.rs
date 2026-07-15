@@ -5,6 +5,7 @@ use crate::db::repos::{XdxrRepo, DownloadCheckpointRepo};
 use chrono::{Datelike, Timelike, NaiveDate};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -36,11 +37,27 @@ pub type ProgressCallback = Box<dyn Fn(i32, i32, i32, i32, &str) + Send + Sync>;
 pub struct DownloaderService {
     pool: SqlitePool,
     config: Arc<AppConfig>,
+    /// Cached working TDX server address from connect.cfg (or None if unreachable)
+    server_addr: Option<SocketAddr>,
 }
 
 impl DownloaderService {
     pub fn new(pool: SqlitePool, config: Arc<AppConfig>) -> Self {
-        Self { pool, config }
+        let tdx_dir = std::path::Path::new(&config.paths.tdx_data_dir);
+        let candidates = crate::tdx_servers::get_server_addrs(tdx_dir);
+        // Probe with real rustdx handshake (not just TCP) at construction time
+        let server_addr = if !candidates.is_empty() {
+            crate::tdx_servers::find_working_server_rustdx(&candidates)
+        } else {
+            None
+        };
+        if server_addr.is_some() {
+            info!("Downloader: found working TDX server at {:?}", server_addr);
+        } else {
+            info!("Downloader: no working TDX server from connect.cfg, will use rustdx default");
+        }
+
+        Self { pool, config, server_addr }
     }
 
     fn day_path(&self, market: Market, symbol: &str) -> PathBuf {
@@ -330,12 +347,18 @@ impl DownloaderService {
         Ok(bars)
     }
 
-    /// Create a rustdx TCP connection with probe
+    /// Create a rustdx TCP connection, preferring connect.cfg server if available.
     async fn get_tcp_connection(&self, _market: u16) -> anyhow::Result<rustdx::tcp::Tcp> {
-        // Use default server IP; could be enhanced with dynamic probing
+        let addr = self.server_addr;
+
         tokio::task::spawn_blocking(move || {
-            rustdx::tcp::Tcp::new()
-                .map_err(|e| anyhow::anyhow!("TDX TCP 连接失败: {e}"))
+            if let Some(addr) = addr {
+                rustdx::tcp::Tcp::new_with_ip(&addr)
+                    .map_err(|e| anyhow::anyhow!("TDX TCP 连接失败 ({}): {e}", addr))
+            } else {
+                rustdx::tcp::Tcp::new()
+                    .map_err(|e| anyhow::anyhow!("TDX TCP 连接失败 (default): {e}"))
+            }
         })
         .await
         .map_err(|e| anyhow::anyhow!("spawn_blocking: {e}"))?
@@ -743,8 +766,8 @@ fn get_pinyin_initials(name: &str) -> String {
 
 
 
-/// Map rustdx market code (0=SZ, 1=SH) to our Market enum
-fn market_to_rustdx(m: Market) -> u16 {
+/// Map our Market enum to rustdx market code (0=SZ, 1=SH).
+pub fn market_to_rustdx(m: Market) -> u16 {
     match m {
         Market::Sz => 0,
         Market::Sh => 1,

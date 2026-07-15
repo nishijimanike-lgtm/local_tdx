@@ -25,6 +25,12 @@ pub struct PathsConfig {
     pub metadata_db_path: String,
     pub backup_dir: String,
     pub parquet_dir: String,
+    #[serde(default = "default_qlib_dir")]
+    pub qlib_dir: String,
+}
+
+fn default_qlib_dir() -> String {
+    "./qlib_bin".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -170,7 +176,7 @@ backoff_ms = 2000
     fn test_day_dir_builder() {
         let config = AppConfig {
             server: ServerConfig { host: "".into(), port: 0 },
-            paths: PathsConfig { tdx_data_dir: "/tdx/vipdoc".into(), metadata_db_path: "".into(), backup_dir: "".into(), parquet_dir: "".into() },
+            paths: PathsConfig { tdx_data_dir: "/tdx/vipdoc".into(), metadata_db_path: "".into(), backup_dir: "".into(), parquet_dir: "".into(), qlib_dir: "".into() },
             calendar: CalendarConfig { benchmark_index_market: 1, benchmark_index_symbol: "".into(), exchange: "".into() },
             tushare: TushareConfig { enabled: false, token: "".into(), base_url: "".into() },
             rate_limit: RateLimitConfig { market_hours_rps: 0, pre_post_market_rps: 0, off_hours_rps: 0 },

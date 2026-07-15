@@ -8,6 +8,8 @@ const router = createRouter({
     { path: '/settings', name: 'settings', component: () => import('../components/settings/SettingsView.vue') },
     { path: '/tasklog', name: 'tasklog', component: () => import('../components/tasklog/TaskLog.vue') },
     { path: '/kline', name: 'kline', component: () => import('../components/kline/KlineView.vue') },
+    { path: '/qlib', name: 'qlib', component: () => import('../components/qlib/QlibDumpView.vue') },
+    { path: '/checker', name: 'checker', component: () => import('../components/checker/DataCheckerView.vue') },
   ],
 })
 

@@ -16,6 +16,8 @@ const settings = useSettingsStore()
 const { toasts, show } = useToast()
 const clock = useClock()
 
+let autoRefreshTimer: number | null = null
+
 onMounted(() => {
   dashboard.fetch()
   dashboard.fetchParquet()
@@ -24,14 +26,27 @@ onMounted(() => {
   tasks.connectSSE()
   // Expose toast globally for child components
   ;(window as any).__toast = show
+
+  // Periodic refresh for dashboard data (every 5 seconds)
+  autoRefreshTimer = window.setInterval(() => {
+    dashboard.fetch()
+    dashboard.fetchParquet()
+  }, 5000)
 })
 
-onUnmounted(() => { tasks.disconnectSSE() })
+onUnmounted(() => {
+  tasks.disconnectSSE()
+  if (autoRefreshTimer) {
+    window.clearInterval(autoRefreshTimer)
+  }
+})
 
 const menuItems = [
   { id: 'dashboard', name: '大盘概览', icon: 'M4 6a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z', path: '/' },
   { id: 'download', name: '盘后下载', icon: 'M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4', path: '/download' },
   { id: 'kline', name: '数据看盘', icon: 'M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z', path: '/kline' },
+  { id: 'checker', name: '更新检查', icon: 'M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z', path: '/checker' },
+  { id: 'qlib', name: 'Qlib导出', icon: 'M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4', path: '/qlib' },
   { id: 'tasklog', name: '任务日志', icon: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4', path: '/tasklog' },
   { id: 'settings', name: '全局设置', icon: 'M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4', path: '/settings' },
 ]

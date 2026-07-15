@@ -16,7 +16,7 @@ const downloadAdjFactor = ref(false)
 const downloadCalendar = ref(false)
 const downloadScan = ref(false)
 
-const dataSource = ref<'remote' | 'local'>('remote')
+const dataSource = ref<'remote' | 'local'>('local')
 
 // Init dates to last 7 days
 const today = new Date()

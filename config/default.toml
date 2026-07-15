@@ -15,6 +15,7 @@ backup_dir = 'D:\tdx_maintain\backup'
 metadata_db_path = 'D:\tdx_maintain\data\metadata.db'
 tdx_data_dir = 'D:\new_tdx64'
 parquet_dir = 'D:\tdx_maintain\parquet'
+qlib_dir = 'D:\tdx_maintain\qlib_bin'
 
 [rate_limit]
 market_hours_rps = 100

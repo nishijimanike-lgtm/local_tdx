@@ -17,7 +17,9 @@ use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use tdx_maintain_core::{
+    checker::DataFreshnessChecker,
     db::repos::*,
+    qlib::QlibDumper,
     task::TaskKind,
     tdx::{DailyBarReader, Market, get_day_filename},
     AppConfig, AppState,
@@ -54,6 +56,7 @@ struct PathsConfigData {
     metadata_db_path: String,
     backup_dir: String,
     parquet_dir: String,
+    qlib_dir: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -147,6 +150,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/alerts/{id}/acknowledge", patch(acknowledge_alert))
         .route("/api/stocks/search", get(search_stocks))
         .route("/api/stock/kline", get(get_stock_kline))
+        .route("/api/checker/freshness", get(check_freshness))
+        .route("/api/qlib/dump", post(trigger_qlib_dump))
+        .route("/api/qlib/progress", get(get_qlib_progress))
         .fallback(spa_fallback)
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
@@ -836,6 +842,89 @@ async fn get_stock_kline(
     }).collect();
 
     Ok(Json(json_res))
+}
+
+/// Handler: Check data freshness vs TDX server.
+///
+/// Probes each market's remote TDX server to discover the latest trading date,
+/// then compares against every local `.day` file to produce a per-market
+/// and per-stock report showing what's up to date vs behind.
+async fn check_freshness(State(state): State<AppState>) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let checker = DataFreshnessChecker::new(state.config.clone(), state.pool.clone());
+    let report = checker
+        .check()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Freshness check failed: {e}")))?;
+
+    Ok(Json(
+        serde_json::to_value(&report)
+            .unwrap_or_else(|_| json!({"error": "serialization failed"})),
+    ))
+}
+
+/// Handler: Trigger Qlib Binary Dump
+///
+/// Spawns the dump in a background task and returns immediately.
+/// The frontend polls `GET /api/qlib/progress` for real-time progress.
+async fn trigger_qlib_dump(State(state): State<AppState>) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let qlib_dir = std::path::PathBuf::from(&state.config.paths.qlib_dir);
+    let pool = state.pool.clone();
+    let config = state.config.clone();
+    let progress_state = state.qlib_progress.clone();
+
+    // Check if already running & mark as started
+    if !progress_state.start(0) {
+        return Err((
+            StatusCode::CONFLICT,
+            "Qlib dump is already running".to_string(),
+        ));
+    }
+
+    // Spawn background task
+    let ps_outer = progress_state.clone();
+    tokio::spawn(async move {
+        let ps = ps_outer.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let dumper = QlibDumper::new(pool, config);
+                let ps_cb = ps.clone();
+
+                let stats = dumper
+                    .dump(&qlib_dir, move |processed, tot, symbol, msg| {
+                        ps_cb.update(processed, tot, symbol, msg);
+                    })
+                    .await;
+
+                stats
+            })
+        })
+        .await;
+
+        match result {
+            Ok(Ok(stats)) => {
+                ps_outer.complete(stats);
+            }
+            Ok(Err(e)) => {
+                ps_outer.fail(format!("{}", e));
+            }
+            Err(e) => {
+                ps_outer.fail(format!("spawn_blocking error: {}", e));
+            }
+        }
+    });
+
+    Ok(Json(json!({ "started": true })))
+}
+
+/// Handler: Poll Qlib Dump Progress
+///
+/// Returns the current progress state: `{ running, progress, stats, error }`.
+/// When no dump has ever been started, returns `{ running: false, progress: null, stats: null, error: null }`.
+async fn get_qlib_progress(State(state): State<AppState>) -> impl IntoResponse {
+    let resp = state.qlib_progress.snapshot()
+        .unwrap_or(json!({ "running": false, "progress": null, "stats": null, "error": null }));
+    (StatusCode::OK, Json(resp)).into_response()
 }
 
 async fn sync_stocks_impl(state: &AppState) -> anyhow::Result<()> {
