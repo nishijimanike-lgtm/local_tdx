@@ -190,6 +190,144 @@ impl<'a> Tdx for Kline<'a> {
     }
 }
 
+// ── IndexKline: for querying index K-line data (e.g. 上证指数, 深证成指) ──────
+//
+// The TDX protocol uses the SAME request packet for both stock and index kline
+// queries. The ONLY difference is in the response: each index bar has 4 extra
+// bytes (up_count: u16 + down_count: u16) appended after amount.
+//
+// Reference: pytdx's `GetIndexBarsCmd` vs `GetSecurityBarsCmd` — both use
+// `0x01016408` as the command identifier, identical send packets.
+
+/// Like [`Kline`] but for index data.
+///
+/// Use this when querying index codes such as `000001` (上证指数) or `399001`
+/// (深证成指). Using [`Kline`] on index codes will cause the parser to
+/// misalign (the stock parser doesn't consume the extra 4 bytes per bar),
+/// producing garbage data or panicking.
+#[derive(Debug, Clone)]
+pub struct IndexKline<'d> {
+    pub send: Box<[u8]>,
+    pub market: u16,
+    pub code: &'d str,
+    pub category: u16,
+    pub start: u16,
+    pub count: u16,
+    pub response: Vec<u8>,
+    pub data: Vec<KlineData<'d>>,
+}
+
+impl<'d> Default for IndexKline<'d> {
+    fn default() -> Self {
+        Self {
+            market: 0,
+            code: "000001",
+            category: 9,
+            start: 0,
+            count: 3,
+            send: {
+                let mut v = [0u8; Kline::SEND.len()];
+                v.copy_from_slice(Kline::SEND);
+                v.into()
+            },
+            response: Vec::new(),
+            data: vec![KlineData::default(); 3],
+        }
+    }
+}
+
+impl<'d> IndexKline<'d> {
+    /// 0 代表深市；1 代表沪市。
+    ///
+    /// ## panic
+    /// 当 code 的字节长度不是 6 时，程序会 panic。
+    #[rustfmt::skip]
+    pub fn new(market: u16, code: &'d str, category: u16, start: u16, count: u16) -> Self {
+        Self { market, code, category, start, count,
+               send: {
+                   let mut arr = [0; Kline::LEN];
+                   arr.copy_from_slice(Kline::SEND);
+                   arr[12..14].copy_from_slice(&market.to_le_bytes());
+                   arr[14..20].copy_from_slice(code.as_bytes());
+                   arr[20..22].copy_from_slice(&category.to_le_bytes());
+                   arr[24..26].copy_from_slice(&start.to_le_bytes());
+                   arr[26..28].copy_from_slice(&count.to_le_bytes());
+                   arr.into()
+               },
+               response: Vec::new(),
+               data: vec![KlineData::default(); count as usize] }
+    }
+}
+
+impl<'a> Tdx for IndexKline<'a> {
+    type Item = [KlineData<'a>];
+
+    // Same SEND as Kline — the TDX protocol uses identical request packets.
+    const SEND: &'static [u8] = Kline::SEND;
+    const TAG: &'static str = "指数日线";
+
+    fn send(&mut self) -> &[u8] {
+        &self.send
+    }
+
+    #[rustfmt::skip]
+    fn parse(&mut self, v: Vec<u8>) {
+        use crate::{
+            tcp::helper::{datetime, price, vol_amount},
+            bytes_helper::{u16_from_le_bytes, u32_from_le_bytes}
+        };
+
+        let count = if v.len() >= 2 {
+            u16_from_le_bytes(&v, 0)
+        } else {
+            0
+        };
+        let n = count as usize;
+        if self.data.len() != n {
+            self.data.resize_with(n, Default::default);
+            self.count = count;
+        }
+        let mut pos = 2usize;
+        let mut base = 0i32;
+        for item in self.data.iter_mut() {
+            if pos + 4 > v.len() {
+                break;
+            }
+            let dt = datetime(&v[pos..pos + 4], self.category);
+            pos += 4;
+            if pos >= v.len() {
+                break;
+            }
+            let open = price(&v, &mut pos);
+            let close = price(&v, &mut pos);
+
+            *item = KlineData { dt, code: self.code,
+                                open:   { base += open; base as f64 / 1000. },
+                                close:  real_price(close, base),
+                                high:   real_price(price(&v, &mut pos), base),
+                                low:    real_price(price(&v, &mut pos), base),
+                                vol:    { pos += 4; vol_amount(u32_from_le_bytes(&v, pos - 4) as i32) },
+                                amount: { pos += 4; vol_amount(u32_from_le_bytes(&v, pos - 4) as i32) }};
+
+            // Index bars have 4 extra bytes: up_count(u16) + down_count(u16).
+            // We skip them — they're not needed for freshness checking.
+            pos += 4;
+
+            base += close;
+        }
+        let filled = self.data.iter().position(|b| b.dt.year == 0).unwrap_or(self.data.len());
+        if filled < self.data.len() {
+            self.data.truncate(filled);
+            self.count = filled as u16;
+        }
+        self.response = v;
+    }
+
+    fn result(&self) -> &Self::Item {
+        &self.data
+    }
+}
+
 #[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct KlineData<'d> {
     pub dt: DateTime,

@@ -10,13 +10,13 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 use rustdx::tcp::Tdx as _;
 
-// ── Benchmark stocks used to probe TDX server for the latest trading date ──
-// Prefer liquid stocks over indices: security_bars on indices often returns
-// garbage on public HQ servers; get_index_bars is not available via rustdx.
-const BENCHMARK_STOCKS: &[(Market, &str)] = &[
-    (Market::Sh, "600000"), // 浦发银行
-    (Market::Sz, "000001"), // 平安银行
-    (Market::Bj, "830799"), // 艾融软件 (北交所)
+// ── Benchmark securities used to probe TDX server for the latest trading date ──
+// Use index codes for SH/SZ (more reliable, always up-to-date) and a stock for BJ.
+// IndexKline is used for indices; Kline for stocks.
+const BENCHMARK_SECURITIES: &[(Market, &str, bool)] = &[
+    (Market::Sh, "000001", true),  // 上证指数 (index)
+    (Market::Sz, "399001", true),  // 深证成指 (index)
+    (Market::Bj, "830799", false), // 艾融软件 (stock)
 ];
 
 // ── Output types ──────────────────────────────────────────────────────────
@@ -56,11 +56,14 @@ pub struct FreshnessSummary {
 /// Try a complete TDX K-line query: connect + fetch + parse.
 ///
 /// When `addr` is `Some`, uses `Tcp::new_with_ip()`, otherwise `Tcp::new()`.
+/// When `is_index` is true, uses `IndexKline` (for index codes like 000001/399001);
+/// otherwise uses `Kline` (for stock codes).
 /// Returns the latest date from the K-line data, or an error string.
 fn try_full_tdx_query(
     market_code: u16,
     symbol: &str,
     addr: Option<std::net::SocketAddr>,
+    is_index: bool,
 ) -> Result<Option<NaiveDate>, String> {
     let mut tcp = if let Some(a) = addr {
         rustdx::tcp::Tcp::new_with_ip(&a).map_err(|e| format!("new_with_ip({a}): {e}"))?
@@ -69,10 +72,20 @@ fn try_full_tdx_query(
     };
 
     // Only need the latest bar for freshness; large counts are slow and fragile.
-    let mut kline = rustdx::tcp::stock::Kline::new(market_code, symbol, 9, 0, 10);
-    let data = kline
-        .recv_parsed(&mut tcp)
-        .map_err(|e| format!("recv_parsed: {e}"))?;
+    // IndexKline for indices (extra 4 bytes/bar in response), Kline for stocks.
+    let data: Vec<rustdx::tcp::stock::KlineData> = if is_index {
+        let mut kline = rustdx::tcp::stock::IndexKline::new(market_code, symbol, 9, 0, 10);
+        kline
+            .recv_parsed(&mut tcp)
+            .map_err(|e| format!("recv_parsed(index): {e}"))?
+            .to_vec()
+    } else {
+        let mut kline = rustdx::tcp::stock::Kline::new(market_code, symbol, 9, 0, 10);
+        kline
+            .recv_parsed(&mut tcp)
+            .map_err(|e| format!("recv_parsed: {e}"))?
+            .to_vec()
+    };
 
     if data.is_empty() {
         return Err("empty kline response".into());
@@ -229,7 +242,7 @@ impl DataFreshnessChecker {
             let mut map: BTreeMap<String, Option<NaiveDate>> = BTreeMap::new();
             let mut cached_addr: Option<SocketAddr> = None;
 
-            for &(market, symbol) in BENCHMARK_STOCKS {
+            for &(market, symbol, is_index) in BENCHMARK_SECURITIES {
                 let market_code = crate::downloader::market_to_rustdx(market);
                 let sym = symbol.to_string();
                 let mdir = market.dir_name().to_string();
@@ -238,7 +251,7 @@ impl DataFreshnessChecker {
 
                 // ── Step 1: try cached server if available ──
                 if let Some(addr) = cached_addr {
-                    match try_full_tdx_query(market_code, &sym, Some(addr)) {
+                    match try_full_tdx_query(market_code, &sym, Some(addr), is_index) {
                         Ok(d) => {
                             info!("Checker: {:?} {} via cached {} = {:?}", market, symbol, addr, d);
                             date = d;
@@ -253,7 +266,7 @@ impl DataFreshnessChecker {
                 // ── Step 2: try each connect.cfg server ──
                 if date.is_none() {
                     for addr in &server_addrs {
-                        match try_full_tdx_query(market_code, &sym, Some(*addr)) {
+                        match try_full_tdx_query(market_code, &sym, Some(*addr), is_index) {
                             Ok(d) => {
                                 info!("Checker: {:?} {} via {} = {:?}", market, symbol, addr, d);
                                 cached_addr = Some(*addr);
@@ -269,7 +282,7 @@ impl DataFreshnessChecker {
 
                 // ── Step 3: fallback to rustdx default servers ──
                 if date.is_none() {
-                    match try_full_tdx_query(market_code, &sym, None) {
+                    match try_full_tdx_query(market_code, &sym, None, is_index) {
                         Ok(d) => {
                             info!("Checker: {:?} {} via rustdx default = {:?}", market, symbol, d);
                             date = d;
