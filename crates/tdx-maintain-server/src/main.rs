@@ -359,6 +359,27 @@ async fn get_parquet_stats(State(state): State<AppState>) -> impl IntoResponse {
     Json(result)
 }
 
+/// Pick the more recent of two RFC3339 timestamp strings.
+/// Returns the non-empty one if the other is empty.
+fn pick_more_recent(a: &Option<String>, b: &str) -> String {
+    match (a, b) {
+        (Some(a_val), b_val) if !b_val.is_empty() => {
+            // Compare by parsing both as DateTime
+            match (
+                chrono::DateTime::parse_from_rfc3339(a_val),
+                chrono::DateTime::parse_from_rfc3339(b_val),
+            ) {
+                (Ok(ta), Ok(tb)) => {
+                    if ta > tb { a_val.clone() } else { b_val.to_string() }
+                }
+                _ => a_val.clone(), // fallback to file mtime if parsing fails
+            }
+        }
+        (Some(a_val), _) => a_val.clone(),
+        (None, b_val) => b_val.to_string(),
+    }
+}
+
 // Handler: Dashboard Stats
 async fn get_dashboard(State(state): State<AppState>) -> Result<impl IntoResponse, (StatusCode, String)> {
     let meta_repo = SyncMetaRepo::new(&state.pool);
@@ -395,7 +416,10 @@ async fn get_dashboard(State(state): State<AppState>) -> Result<impl IntoRespons
     };
 
     // Compute daily bar date range from benchmark index files (SH 000001 and SZ 399001)
+    // Also capture file modification time as a more reliable "last update" indicator
+    // than sync_meta (which is only written when tasks complete via our task queue).
     let tdx_data_dir = state.config.paths.tdx_data_dir.clone();
+    let parquet_dir_path = state.config.paths.parquet_dir.clone();
     let daily_bar_range = tokio::task::spawn_blocking(move || {
         let base_dir = {
             let p = std::path::Path::new(&tdx_data_dir);
@@ -411,10 +435,22 @@ async fn get_dashboard(State(state): State<AppState>) -> Result<impl IntoRespons
         let reader = DailyBarReader::default();
         let mut first_date: Option<String> = None;
         let mut last_date: Option<String> = None;
+        let mut latest_file_mtime: Option<std::time::SystemTime> = None;
 
         for (market, code) in &index_candidates {
             let filename = get_day_filename(*market, code, &base_dir);
             let path = base_dir.join(market.dir_name()).join("lday").join(&filename);
+
+            // Capture file modification time
+            if let Ok(meta) = std::fs::metadata(&path) {
+                if let Ok(mtime) = meta.modified() {
+                    latest_file_mtime = Some(match latest_file_mtime {
+                        Some(existing) if existing > mtime => existing,
+                        _ => mtime,
+                    });
+                }
+            }
+
             if let Ok(bars) = reader.read_file(&path) {
                 if let Some(first) = bars.first() {
                     let d = first.date.format("%Y-%m-%d").to_string();
@@ -433,8 +469,45 @@ async fn get_dashboard(State(state): State<AppState>) -> Result<impl IntoRespons
             }
         }
 
-        (first_date, last_date)
-    }).await.unwrap_or((None, None));
+        // Also check latest parquet file mtime for adj_factor freshness
+        let mut latest_parquet_mtime: Option<std::time::SystemTime> = None;
+        let pq_path = std::path::Path::new(&parquet_dir_path);
+        if pq_path.exists() {
+            if let Ok(market_dirs) = std::fs::read_dir(pq_path) {
+                for mdir in market_dirs.flatten() {
+                    if mdir.path().is_dir() {
+                        if let Ok(files) = std::fs::read_dir(mdir.path()) {
+                            for f in files.flatten() {
+                                if f.path().extension().map_or(false, |e| e == "parquet") {
+                                    if let Ok(meta) = f.metadata() {
+                                        if let Ok(mtime) = meta.modified() {
+                                            latest_parquet_mtime = Some(match latest_parquet_mtime {
+                                                Some(existing) if existing > mtime => existing,
+                                                _ => mtime,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        (first_date, last_date, latest_file_mtime, latest_parquet_mtime)
+    }).await.unwrap_or((None, None, None, None));
+
+    // Use file mtime as primary source for "last update" timestamps.
+    // Fall back to sync_meta if file mtime is unavailable.
+    // Use the MORE RECENT of the two (file mtime vs sync_meta).
+    let file_daily_ts = daily_bar_range.2
+        .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339());
+    let file_adj_ts = daily_bar_range.3
+        .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339());
+
+    let last_daily_update = pick_more_recent(&file_daily_ts, &last_daily_update);
+    let last_adj_factor_update = pick_more_recent(&file_adj_ts, &last_adj_factor_update);
 
     Ok(Json(json!({
         "adj_factor_tier": adj_factor_tier,
